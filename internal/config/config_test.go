@@ -31,6 +31,9 @@ func TestDefaultConfig(t *testing.T) {
 	if !cfg.Output.Clipboard {
 		t.Error("Output.Clipboard = false, want true")
 	}
+	if cfg.Output.SilenceTimeout != 5.0 {
+		t.Errorf("Output.SilenceTimeout = %v, want 5.0", cfg.Output.SilenceTimeout)
+	}
 	// Phase 2 meeting defaults
 	if cfg.Meeting.DefaultSources != "both" {
 		t.Errorf("Meeting.DefaultSources = %q, want %q", cfg.Meeting.DefaultSources, "both")
@@ -55,8 +58,9 @@ func TestSaveAndLoad(t *testing.T) {
 			ModelPath:  "/custom/models",
 		},
 		Output: OutputConfig{
-			AutoPaste: false,
-			Clipboard: true,
+			AutoPaste:      false,
+			Clipboard:      true,
+			SilenceTimeout: 3.5,
 		},
 	}
 
@@ -86,6 +90,9 @@ func TestSaveAndLoad(t *testing.T) {
 	}
 	if loaded.Output.Clipboard != original.Output.Clipboard {
 		t.Errorf("Output.Clipboard = %v, want %v", loaded.Output.Clipboard, original.Output.Clipboard)
+	}
+	if loaded.Output.SilenceTimeout != original.Output.SilenceTimeout {
+		t.Errorf("Output.SilenceTimeout = %v, want %v", loaded.Output.SilenceTimeout, original.Output.SilenceTimeout)
 	}
 }
 
@@ -226,6 +233,98 @@ func TestSessionDir(t *testing.T) {
 	want := "/custom/data/tomoe/sessions"
 	if got != want {
 		t.Errorf("SessionDir() = %q, want %q", got, want)
+	}
+}
+
+func TestSilenceTimeoutRoundTrip(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.toml")
+
+	cfg := DefaultConfig()
+	cfg.Output.SilenceTimeout = 7.25
+
+	if err := Save(cfg, path); err != nil {
+		t.Fatalf("Save() error: %v", err)
+	}
+
+	// Verify the TOML file contains the silence_timeout key
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("ReadFile() error: %v", err)
+	}
+	if !strings.Contains(string(data), "silence_timeout") {
+		t.Error("saved TOML does not contain silence_timeout key")
+	}
+
+	loaded, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load() error: %v", err)
+	}
+	if loaded.Output.SilenceTimeout != 7.25 {
+		t.Errorf("Output.SilenceTimeout = %v, want 7.25", loaded.Output.SilenceTimeout)
+	}
+}
+
+func TestSilenceTimeoutZeroRoundTrip(t *testing.T) {
+	// SilenceTimeout of 0 means disabled; verify it round-trips correctly
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.toml")
+
+	cfg := DefaultConfig()
+	cfg.Output.SilenceTimeout = 0
+
+	if err := Save(cfg, path); err != nil {
+		t.Fatalf("Save() error: %v", err)
+	}
+
+	loaded, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load() error: %v", err)
+	}
+	if loaded.Output.SilenceTimeout != 0 {
+		t.Errorf("Output.SilenceTimeout = %v, want 0 (disabled)", loaded.Output.SilenceTimeout)
+	}
+}
+
+func TestBackwardCompatNoSilenceTimeout(t *testing.T) {
+	// A config TOML written before SilenceTimeout was added should parse without error.
+	// The SilenceTimeout field should get its zero value (0).
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.toml")
+
+	oldConfig := `[hotkey]
+binding = "Super+Shift+R"
+
+[audio]
+device = "default"
+
+[transcription]
+gpu_enabled = false
+model_path = "/home/user/.local/share/tomoe/models"
+
+[output]
+auto_paste = true
+clipboard = true
+`
+	if err := os.WriteFile(path, []byte(oldConfig), 0o644); err != nil {
+		t.Fatalf("WriteFile() error: %v", err)
+	}
+
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load() error: %v", err)
+	}
+
+	// Existing fields should parse correctly
+	if !cfg.Output.AutoPaste {
+		t.Error("Output.AutoPaste = false, want true")
+	}
+	if !cfg.Output.Clipboard {
+		t.Error("Output.Clipboard = false, want true")
+	}
+	// SilenceTimeout should be zero value since it's absent from TOML
+	if cfg.Output.SilenceTimeout != 0 {
+		t.Errorf("Output.SilenceTimeout = %v, want 0 (absent from old config)", cfg.Output.SilenceTimeout)
 	}
 }
 
