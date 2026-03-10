@@ -2,7 +2,7 @@
 
 ## Project Overview
 
-Local-first speech-to-text desktop application for Linux. Captures microphone audio, transcribes locally using NVIDIA Parakeet TDT 0.6B v2 (FP16) via sherpa-onnx, and delivers text to clipboard. Written in Go with cgo dependencies.
+Local-first speech-to-text desktop application for Linux. Captures microphone audio, transcribes locally using NVIDIA Parakeet TDT 0.6B v3 (INT8, 25 European languages) via sherpa-onnx, and delivers text to clipboard. Written in Go with cgo dependencies.
 
 - **License:** GPLv3
 - **Language:** Go 1.22+
@@ -39,7 +39,7 @@ The authoritative tech spec is at `docs/speech-to-text-tech-brief.md`. Always va
 make build            # Build CLI binary (CPU)
 make build-cuda       # Build with CUDA support
 make test             # Run tests
-make download-model   # Download Parakeet TDT FP16 model + Silero VAD
+make download-model   # Download Parakeet TDT v3 INT8 model + Silero VAD
 make install          # Install to /usr/local/bin
 ```
 
@@ -65,7 +65,7 @@ make install          # Install to /usr/local/bin
 
 ```
 Go binary → cgo → sherpa-onnx C API → ONNX Runtime (CUDA EP / CPU EP)
-  → Parakeet TDT 0.6B v2 FP16 (encoder + decoder + joiner)
+  → Parakeet TDT 0.6B v3 INT8 (encoder + decoder + joiner, 25 languages)
   → Silero VAD (~2MB)
 ```
 
@@ -85,8 +85,8 @@ Go binary → cgo → sherpa-onnx C API → ONNX Runtime (CUDA EP / CPU EP)
 - Use `internal/` for all non-main packages — nothing is exported outside the module
 - Platform-specific code uses `_linux.go` build tag suffix
 - Audio format: 16kHz mono PCM float32 (Parakeet TDT native input)
-- English only for current scope
-- Model quantization: FP16 exclusively
+- 25 European languages with automatic language detection
+- Model quantization: INT8 (v3)
 - Config format: TOML via `pelletier/go-toml`
 
 ## CLI Commands
@@ -109,5 +109,5 @@ tomoe config              # Print current config
 - Transcription latency (30s clip): <1s GPU, <5s CPU
 - Idle daemon memory: <50MB RSS
 - Binary size: <30MB (excluding model + ONNX Runtime .so)
-- Model download: ~610MB (FP16 archive) + ~2MB (Silero VAD)
-- VRAM during inference: ~1.8–2.5GB
+- Model download: ~350MB (INT8 archive) + ~2MB (Silero VAD)
+- VRAM during inference: ~1–1.5GB (INT8)
