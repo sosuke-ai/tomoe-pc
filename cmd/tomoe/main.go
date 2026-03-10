@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"fmt"
 	"os"
 
@@ -8,8 +9,10 @@ import (
 
 	"github.com/sosuke-ai/tomoe-pc/internal/audio"
 	"github.com/sosuke-ai/tomoe-pc/internal/config"
+	"github.com/sosuke-ai/tomoe-pc/internal/daemon"
 	"github.com/sosuke-ai/tomoe-pc/internal/gpu"
 	"github.com/sosuke-ai/tomoe-pc/internal/models"
+	"github.com/sosuke-ai/tomoe-pc/internal/platform"
 	"github.com/sosuke-ai/tomoe-pc/internal/transcribe"
 )
 
@@ -34,6 +37,7 @@ func init() {
 	rootCmd.AddCommand(modelCmd)
 	rootCmd.AddCommand(transcribeCmd)
 	rootCmd.AddCommand(devicesCmd)
+	rootCmd.AddCommand(stopCmd)
 }
 
 // startCmd is an alias for the root command.
@@ -51,8 +55,64 @@ func runStart(cmd *cobra.Command, args []string) error {
 		}
 	}
 
-	fmt.Println("Daemon mode not yet implemented.")
-	return nil
+	// Check if already running
+	if daemon.IsRunning() {
+		return fmt.Errorf("daemon already running (PID %d)", daemon.ReadPID())
+	}
+
+	// Load config
+	cfg, err := config.Load(config.Path())
+	if err != nil {
+		return fmt.Errorf("loading config: %w", err)
+	}
+
+	// Check models
+	mgr := models.NewManager(cfg.Transcription.ModelPath)
+	status := mgr.Check()
+	if !status.Ready() {
+		return fmt.Errorf("models not downloaded (run 'tomoe init' or 'tomoe model download')")
+	}
+
+	// Create transcription engine
+	engine, err := transcribe.NewEngine(transcribe.Config{
+		EncoderPath: status.EncoderPath,
+		DecoderPath: status.DecoderPath,
+		JoinerPath:  status.JoinerPath,
+		TokensPath:  status.TokensPath,
+		VADPath:     status.VADPath,
+		UseGPU:      cfg.Transcription.GPUEnabled,
+	})
+	if err != nil {
+		return fmt.Errorf("creating transcription engine: %w", err)
+	}
+	defer engine.Close()
+
+	// Create platform services
+	svc, err := platform.New(cfg)
+	if err != nil {
+		return fmt.Errorf("initializing platform services: %w", err)
+	}
+	defer svc.Close()
+
+	// Run daemon
+	d := daemon.New(cfg, engine, svc)
+	return d.Run(context.Background())
+}
+
+var stopCmd = &cobra.Command{
+	Use:   "stop",
+	Short: "Stop the running daemon",
+	RunE: func(cmd *cobra.Command, args []string) error {
+		if !daemon.IsRunning() {
+			fmt.Println("Daemon is not running.")
+			return nil
+		}
+		if err := daemon.StopRemote(); err != nil {
+			return fmt.Errorf("stopping daemon: %w", err)
+		}
+		fmt.Println("Stop signal sent to daemon.")
+		return nil
+	},
 }
 
 var initCmd = &cobra.Command{
@@ -144,7 +204,11 @@ var statusCmd = &cobra.Command{
 		fmt.Println()
 
 		// Daemon
-		fmt.Println("Daemon: not running (daemon mode not yet implemented)")
+		if daemon.IsRunning() {
+			fmt.Printf("Daemon: running (PID %d)\n", daemon.ReadPID())
+		} else {
+			fmt.Println("Daemon: not running")
+		}
 
 		return nil
 	},
