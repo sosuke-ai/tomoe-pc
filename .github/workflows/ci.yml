@@ -37,6 +37,7 @@ jobs:
 
       - name: Stage frontend dist for go:embed
         run: |
+          mkdir -p cmd/tomoe-gui/frontend
           rm -rf cmd/tomoe-gui/frontend/dist
           cp -r frontend/dist cmd/tomoe-gui/frontend/dist
 
@@ -87,6 +88,7 @@ jobs:
 
       - name: Stage frontend dist for go:embed
         run: |
+          mkdir -p cmd/tomoe-gui/frontend
           rm -rf cmd/tomoe-gui/frontend/dist
           cp -r frontend/dist cmd/tomoe-gui/frontend/dist
 
