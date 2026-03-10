@@ -47,7 +47,7 @@ jobs:
         run: CGO_ENABLED=1 go build -v -o tomoe ./cmd/tomoe
 
       - name: Build GUI
-        run: CGO_ENABLED=1 go build -v -tags webkit2_41 -o tomoe-gui ./cmd/tomoe-gui
+        run: CGO_ENABLED=1 go build -v -tags production,webkit2_41 -o tomoe-gui ./cmd/tomoe-gui
 
   lint:
     runs-on: ubuntu-24.04

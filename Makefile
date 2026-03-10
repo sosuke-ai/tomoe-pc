@@ -58,7 +58,7 @@ build: ## Build CLI binary (and GUI if webkit2gtk available)
 	CGO_ENABLED=1 go build $(GOFLAGS) $(LDFLAGS) -o $(BINARY) ./cmd/tomoe
 ifeq ($(HAS_WEBKIT),yes)
 	@echo "webkit2gtk-4.1 detected, building GUI..."
-	CGO_ENABLED=1 go build $(GOFLAGS) $(LDFLAGS) -tags webkit2_41 -o $(GUI_BINARY) ./cmd/tomoe-gui
+	CGO_ENABLED=1 go build $(GOFLAGS) $(LDFLAGS) -tags production,webkit2_41 -o $(GUI_BINARY) ./cmd/tomoe-gui
 else
 	@echo "webkit2gtk-4.1 not found, skipping GUI build."
 endif
@@ -66,7 +66,7 @@ endif
 build-gui: build-frontend ## Build GUI binary only (requires webkit2gtk-4.1)
 	rm -rf cmd/tomoe-gui/frontend/dist
 	cp -r frontend/dist cmd/tomoe-gui/frontend/dist
-	CGO_ENABLED=1 go build $(GOFLAGS) $(LDFLAGS) -tags webkit2_41 -o $(GUI_BINARY) ./cmd/tomoe-gui
+	CGO_ENABLED=1 go build $(GOFLAGS) $(LDFLAGS) -tags production,webkit2_41 -o $(GUI_BINARY) ./cmd/tomoe-gui
 
 build-frontend: ## Build React frontend
 	cd frontend && npm install && npm run build
