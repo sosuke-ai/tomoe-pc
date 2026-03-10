@@ -11,8 +11,11 @@ import (
 	"github.com/sosuke-ai/tomoe-pc/internal/config"
 	"github.com/sosuke-ai/tomoe-pc/internal/daemon"
 	"github.com/sosuke-ai/tomoe-pc/internal/gpu"
+	"github.com/sosuke-ai/tomoe-pc/internal/hotkey"
 	"github.com/sosuke-ai/tomoe-pc/internal/models"
 	"github.com/sosuke-ai/tomoe-pc/internal/platform"
+	"github.com/sosuke-ai/tomoe-pc/internal/session"
+	"github.com/sosuke-ai/tomoe-pc/internal/speaker"
 	"github.com/sosuke-ai/tomoe-pc/internal/transcribe"
 )
 
@@ -99,8 +102,38 @@ func runStart(cmd *cobra.Command, args []string) error {
 	}
 	defer svc.Close()
 
+	// Set up meeting mode dependencies (optional — non-fatal if any fail)
+	opts := &daemon.MeetingOpts{
+		ModelStatus: status,
+		Store:       session.NewStore(config.SessionDir()),
+	}
+
+	// Create meeting hotkey
+	meetingBinding := cfg.Hotkey.MeetingBinding
+	if meetingBinding == "" {
+		meetingBinding = "Super+Shift+M"
+	}
+	if mhk, err := hotkey.NewListener(meetingBinding); err == nil {
+		opts.MeetingHotkey = mhk
+	} else {
+		fmt.Fprintf(os.Stderr, "Warning: meeting hotkey %q: %v\n", meetingBinding, err)
+	}
+
+	// Create speaker embedder (optional — only if model available)
+	if status.SpeakerEmbeddingReady {
+		if emb, err := speaker.NewEmbedder(status.SpeakerEmbeddingPath); err == nil {
+			opts.Embedder = emb
+			threshold := speaker.DefaultThreshold
+			if cfg.Meeting.SpeakerThreshold > 0 {
+				threshold = cfg.Meeting.SpeakerThreshold
+			}
+			opts.Tracker = speaker.NewTracker(threshold)
+			defer emb.Close()
+		}
+	}
+
 	// Run daemon
-	d := daemon.New(cfg, engine, svc)
+	d := daemon.New(cfg, engine, svc, opts)
 	return d.Run(context.Background())
 }
 

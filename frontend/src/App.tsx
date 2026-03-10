@@ -25,9 +25,11 @@ function App() {
   useEffect(() => {
     loadDevices();
 
-    // Handle in-window keyboard shortcut for meeting toggle (Super+Shift+M)
+    // Handle in-window keyboard shortcut for meeting toggle.
+    // Super+Shift+M (metaKey) or Ctrl+Shift+M (fallback for Linux/WebKitGTK
+    // where Super key may not set metaKey).
     function handleKeyDown(e: KeyboardEvent) {
-      if (e.metaKey && e.shiftKey && e.key === 'M') {
+      if (e.shiftKey && e.key === 'M' && (e.metaKey || e.ctrlKey)) {
         e.preventDefault();
         if (isRecording) {
           handleStop();

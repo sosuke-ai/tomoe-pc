@@ -48,9 +48,10 @@ type Stats struct {
 
 // Coordinator manages one or two live transcription pipelines (mic + monitor).
 type Coordinator struct {
-	cfg       Config
-	segmentCh chan session.Segment
-	startTime time.Time
+	cfg        Config
+	segmentCh  chan session.Segment
+	activityCh chan struct{} // signalled when VAD detects ongoing speech
+	startTime  time.Time
 
 	cancel context.CancelFunc
 	wg     sync.WaitGroup
@@ -72,8 +73,9 @@ func New(cfg Config) *Coordinator {
 		bufSize = 64
 	}
 	return &Coordinator{
-		cfg:       cfg,
-		segmentCh: make(chan session.Segment, bufSize),
+		cfg:        cfg,
+		segmentCh:  make(chan session.Segment, bufSize),
+		activityCh: make(chan struct{}, 1),
 	}
 }
 
@@ -122,7 +124,15 @@ func (c *Coordinator) Segments() <-chan session.Segment {
 	return c.segmentCh
 }
 
+// Activity returns a channel signalled when VAD detects ongoing speech.
+// Use this to reset silence timers — speech is in progress even though
+// no completed segment has been emitted yet.
+func (c *Coordinator) Activity() <-chan struct{} {
+	return c.activityCh
+}
+
 // Stop stops all pipelines and waits for them to finish.
+// Closes the underlying audio capturers to release device handles.
 func (c *Coordinator) Stop() {
 	if c.cancel != nil {
 		c.cancel()
@@ -134,6 +144,15 @@ func (c *Coordinator) Stop() {
 		_ = c.cfg.MonitorCapturer.Stop()
 	}
 	c.wg.Wait()
+
+	// Close capturers to release underlying audio devices.
+	// Must happen after wg.Wait() so pipelines are done reading.
+	if c.cfg.MicCapturer != nil {
+		c.cfg.MicCapturer.Close()
+	}
+	if c.cfg.MonitorCapturer != nil {
+		c.cfg.MonitorCapturer.Close()
+	}
 }
 
 // Stats returns runtime statistics.

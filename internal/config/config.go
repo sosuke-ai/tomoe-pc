@@ -37,8 +37,9 @@ type TranscriptionConfig struct {
 
 // OutputConfig holds output behavior settings.
 type OutputConfig struct {
-	AutoPaste bool `toml:"auto_paste"`
-	Clipboard bool `toml:"clipboard"`
+	AutoPaste      bool    `toml:"auto_paste"`
+	Clipboard      bool    `toml:"clipboard"`
+	SilenceTimeout float64 `toml:"silence_timeout"` // auto-stop dictation after N seconds of silence (0=disabled)
 }
 
 // MeetingConfig holds Phase 2 meeting transcription settings.
@@ -66,8 +67,9 @@ func DefaultConfig() *Config {
 			ModelPath:  ModelDir(),
 		},
 		Output: OutputConfig{
-			AutoPaste: true,
-			Clipboard: true,
+			AutoPaste:      true,
+			Clipboard:      true,
+			SilenceTimeout: 5.0,
 		},
 		Meeting: MeetingConfig{
 			DefaultSources:     "both",

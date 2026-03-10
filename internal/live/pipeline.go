@@ -64,6 +64,14 @@ func (c *Coordinator) processPipeline(ctx context.Context, sc *audio.StreamCaptu
 				vad.AcceptWaveform(window)
 			}
 
+			// Signal activity when VAD detects ongoing speech
+			if vad.IsSpeech() {
+				select {
+				case c.activityCh <- struct{}{}:
+				default:
+				}
+			}
+
 			// Process any completed speech segments
 			c.drainVAD(vad, source)
 		}

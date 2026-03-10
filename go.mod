@@ -12,7 +12,6 @@ require (
 	github.com/schollz/progressbar/v3 v3.19.0
 	github.com/spf13/cobra v1.10.2
 	github.com/wailsapp/wails/v2 v2.11.0
-	golang.design/x/hotkey v0.4.1
 )
 
 require (

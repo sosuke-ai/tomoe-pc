@@ -35,7 +35,7 @@ func onTrayReady(app *App) {
 
 	tm := &trayManager{app: app}
 
-	tm.mStartStop = systray.AddMenuItem("Start Recording", "Start/Stop recording")
+	tm.mStartStop = systray.AddMenuItem("Start Meeting", "Start/Stop meeting recording")
 	systray.AddSeparator()
 	tm.mShowWindow = systray.AddMenuItem("Show Window", "Show the main window")
 	systray.AddSeparator()
@@ -53,18 +53,26 @@ func (tm *trayManager) handleEvents() {
 			}
 			tm.app.mu.Lock()
 			recording := tm.app.recording
+			dictating := tm.app.dictating
 			tm.app.mu.Unlock()
+
+			// Don't start meeting while dictating
+			if dictating {
+				continue
+			}
 
 			if recording {
 				_, _ = tm.app.StopSession()
-				tm.mStartStop.SetTitle("Start Recording")
+				tm.mStartStop.SetTitle("Start Meeting")
 				systray.SetIcon(trayIcon)
+				systray.SetTooltip("Tomoe — Speech-to-Text")
 			} else {
 				micDevice := tm.app.cfg.Audio.Device
 				monitorDevice := tm.app.cfg.Meeting.MonitorDevice
 				_ = tm.app.StartSession(micDevice, monitorDevice)
-				tm.mStartStop.SetTitle("Stop Recording")
+				tm.mStartStop.SetTitle("Stop Meeting")
 				systray.SetIcon(trayIconRecording)
+				systray.SetTooltip("Tomoe — Meeting Recording...")
 			}
 
 		case <-tm.mShowWindow.ClickedCh:

@@ -32,9 +32,12 @@ type App struct {
 	store       *session.Store
 	modelMgr    *models.Manager
 
-	mu          sync.Mutex
-	recording   bool
-	currentSess *session.Session
+	mu              sync.Mutex
+	recording       bool // meeting recording in progress
+	dictating       bool // dictation recording in progress
+	dictCoordinator *live.Coordinator
+	dictCancel      context.CancelFunc
+	currentSess     *session.Session
 }
 
 // NewApp creates a new App instance.
@@ -105,6 +108,12 @@ func (a *App) Startup(ctx context.Context) {
 func (a *App) Shutdown(ctx context.Context) {
 	if a.recording {
 		_, _ = a.StopSession()
+	}
+	if a.dictCoordinator != nil {
+		a.dictCoordinator.Stop()
+	}
+	if a.dictCancel != nil {
+		a.dictCancel()
 	}
 	if a.engine != nil {
 		a.engine.Close()
