@@ -76,7 +76,7 @@ func (s *Status) String() string {
 	if s.VADReady {
 		vad = "ready"
 	}
-	return fmt.Sprintf("Model dir: %s\nParakeet TDT FP16: %s\nSilero VAD: %s",
+	return fmt.Sprintf("Model dir: %s\nParakeet TDT INT8: %s\nSilero VAD: %s",
 		s.ModelDir, parakeet, vad)
 }
 
@@ -91,7 +91,7 @@ func (m *Manager) Download(force bool) error {
 
 	// Download Parakeet TDT archive
 	if force || !status.ParakeetReady {
-		fmt.Println("Downloading Parakeet TDT 0.6B v2 FP16 model...")
+		fmt.Println("Downloading Parakeet TDT 0.6B v3 INT8 model...")
 		if err := m.downloadAndExtractArchive(ParakeetArchiveURL); err != nil {
 			return fmt.Errorf("downloading Parakeet model: %w", err)
 		}

@@ -9,6 +9,7 @@ import (
 	"github.com/sosuke-ai/tomoe-pc/internal/config"
 	"github.com/sosuke-ai/tomoe-pc/internal/gpu"
 	"github.com/sosuke-ai/tomoe-pc/internal/models"
+	"github.com/sosuke-ai/tomoe-pc/internal/transcribe"
 )
 
 func main() {
@@ -30,6 +31,7 @@ func init() {
 	rootCmd.AddCommand(statusCmd)
 	rootCmd.AddCommand(configCmd)
 	rootCmd.AddCommand(modelCmd)
+	rootCmd.AddCommand(transcribeCmd)
 }
 
 // startCmd is an alias for the root command.
@@ -158,7 +160,7 @@ func init() {
 
 var modelDownloadCmd = &cobra.Command{
 	Use:   "download",
-	Short: "Download or re-download Parakeet TDT FP16 model and Silero VAD",
+	Short: "Download or re-download Parakeet TDT INT8 model and Silero VAD",
 	RunE: func(cmd *cobra.Command, args []string) error {
 		force, _ := cmd.Flags().GetBool("force")
 		mgr := models.NewManager(config.ModelDir())
@@ -177,6 +179,77 @@ var modelStatusCmd = &cobra.Command{
 		mgr := models.NewManager(config.ModelDir())
 		status := mgr.Check()
 		fmt.Println(status)
+		return nil
+	},
+}
+
+var transcribeCmd = &cobra.Command{
+	Use:   "transcribe <file>",
+	Short: "Transcribe an audio file (WAV, FLAC, OGG)",
+	Args:  cobra.ExactArgs(1),
+	RunE: func(cmd *cobra.Command, args []string) error {
+		filePath := args[0]
+
+		if !transcribe.IsSupportedFormat(filePath) {
+			return fmt.Errorf("unsupported audio format: %s (supported: .wav, .flac, .ogg)", filePath)
+		}
+
+		if _, err := os.Stat(filePath); os.IsNotExist(err) {
+			return fmt.Errorf("file not found: %s", filePath)
+		}
+
+		// Load config or use defaults
+		var cfg *config.Config
+		if config.Exists() {
+			var err error
+			cfg, err = config.Load(config.Path())
+			if err != nil {
+				return fmt.Errorf("loading config: %w", err)
+			}
+		} else {
+			cfg = config.DefaultConfig()
+		}
+
+		// Check model status
+		mgr := models.NewManager(cfg.Transcription.ModelPath)
+		status := mgr.Check()
+		if !status.Ready() {
+			return fmt.Errorf("models not downloaded (run 'tomoe init' or 'tomoe model download')")
+		}
+
+		// Create transcription engine
+		engine, err := transcribe.NewEngine(transcribe.Config{
+			EncoderPath: status.EncoderPath,
+			DecoderPath: status.DecoderPath,
+			JoinerPath:  status.JoinerPath,
+			TokensPath:  status.TokensPath,
+			VADPath:     status.VADPath,
+			UseGPU:      cfg.Transcription.GPUEnabled,
+		})
+		if err != nil {
+			return fmt.Errorf("creating transcription engine: %w", err)
+		}
+		defer engine.Close()
+
+		// Transcribe
+		result, err := engine.TranscribeFile(filePath)
+		if err != nil {
+			return fmt.Errorf("transcription failed: %w", err)
+		}
+
+		if result.Text == "" {
+			fmt.Println("(no speech detected)")
+			return nil
+		}
+
+		fmt.Println(result.Text)
+
+		if lang := result.Language; lang != "" {
+			fmt.Fprintf(os.Stderr, "Language: %s | Duration: %.1fs\n", lang, result.Duration)
+		} else {
+			fmt.Fprintf(os.Stderr, "Duration: %.1fs\n", result.Duration)
+		}
+
 		return nil
 	},
 }
