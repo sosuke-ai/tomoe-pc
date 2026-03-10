@@ -1,6 +1,8 @@
 .PHONY: dev-deps dev-tools fmt lint vet test test-integration test-coverage build build-cuda package install clean download-model
 
 BINARY    := tomoe
+VERSION   := $(shell git describe --tags --always --dirty 2>/dev/null || echo "dev")
+LDFLAGS   := -ldflags "-X main.Version=$(VERSION)"
 GOFLAGS   := -v
 INSTALL_DIR := /usr/local/bin
 LINT_VERSION := v1.64.8
@@ -11,7 +13,7 @@ dev-deps: ## Install Ubuntu system packages needed for development
 	sudo apt install -y build-essential pkg-config \
 	  libx11-dev libxtst-dev libxkbcommon-dev \
 	  libasound-dev portaudio19-dev libportaudio2 libpulse-dev \
-	  xclip xdotool wl-clipboard wtype libnotify-bin
+	  xclip xdotool wl-clipboard wtype libnotify-bin ffmpeg
 
 dev-tools: ## Install Go development tools (golangci-lint, goimports)
 	go install github.com/golangci/golangci-lint/cmd/golangci-lint@$(LINT_VERSION)
@@ -44,7 +46,7 @@ test-coverage: ## Run tests with coverage report
 ## Build ──────────────────────────────────────────────────────────────
 
 build: ## Build CLI binary
-	CGO_ENABLED=1 go build $(GOFLAGS) -o $(BINARY) ./cmd/tomoe
+	CGO_ENABLED=1 go build $(GOFLAGS) $(LDFLAGS) -o $(BINARY) ./cmd/tomoe
 
 build-cuda: build ## Same binary — CUDA EP is selected at runtime via config
 
@@ -65,7 +67,7 @@ clean: ## Remove build artifacts
 
 ## Model ──────────────────────────────────────────────────────────────
 
-download-model: build ## Download Parakeet TDT FP16 model + Silero VAD
+download-model: build ## Download Parakeet TDT INT8 model + Silero VAD
 	./$(BINARY) model download
 
 ## Help ───────────────────────────────────────────────────────────────

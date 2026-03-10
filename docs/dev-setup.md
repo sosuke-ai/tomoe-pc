@@ -20,6 +20,9 @@ sudo apt install wl-clipboard wtype
 
 # Desktop notifications
 sudo apt install libnotify-bin
+
+# Audio format conversion (FLAC, OGG → WAV for transcription)
+sudo apt install ffmpeg
 ```
 
 ### One-liner
@@ -28,7 +31,7 @@ sudo apt install libnotify-bin
 sudo apt install --allow-downgrades build-essential pkg-config \
   libx11-dev libxtst-dev libxkbcommon-dev \
   libasound-dev portaudio19-dev libportaudio2 libpulse-dev \
-  xclip xdotool wl-clipboard wtype libnotify-bin
+  xclip xdotool wl-clipboard wtype libnotify-bin ffmpeg
 ```
 
 ## Go

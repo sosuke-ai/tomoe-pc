@@ -38,6 +38,7 @@ func init() {
 	rootCmd.AddCommand(transcribeCmd)
 	rootCmd.AddCommand(devicesCmd)
 	rootCmd.AddCommand(stopCmd)
+	rootCmd.AddCommand(versionCmd)
 }
 
 // startCmd is an alias for the root command.
@@ -203,6 +204,32 @@ var statusCmd = &cobra.Command{
 		fmt.Println(modelStatus)
 		fmt.Println()
 
+		// Audio devices
+		devices, err := audio.ListDevices()
+		if err != nil {
+			fmt.Printf("Audio: error listing devices (%v)\n", err)
+		} else if len(devices) == 0 {
+			fmt.Println("Audio: no capture devices found")
+		} else {
+			fmt.Printf("Audio: %d capture device(s)\n", len(devices))
+			for _, d := range devices {
+				def := ""
+				if d.IsDefault {
+					def = " *"
+				}
+				fmt.Printf("  - %s%s\n", d.Name, def)
+			}
+		}
+		fmt.Println()
+
+		// Display server
+		ds := os.Getenv("XDG_SESSION_TYPE")
+		if ds == "" {
+			ds = "unknown"
+		}
+		fmt.Printf("Display: %s\n", ds)
+		fmt.Println()
+
 		// Daemon
 		if daemon.IsRunning() {
 			fmt.Printf("Daemon: running (PID %d)\n", daemon.ReadPID())
@@ -342,6 +369,17 @@ var devicesCmd = &cobra.Command{
 			fmt.Printf("  %s%s\n", d.Name, def)
 		}
 		return nil
+	},
+}
+
+// Version is set at build time via -ldflags.
+var Version = "dev"
+
+var versionCmd = &cobra.Command{
+	Use:   "version",
+	Short: "Print the version",
+	Run: func(cmd *cobra.Command, args []string) {
+		fmt.Printf("tomoe %s\n", Version)
 	},
 }
 

@@ -15,14 +15,15 @@ import (
 
 // Status describes the state of downloaded models.
 type Status struct {
-	ParakeetReady bool
-	VADReady      bool
-	ModelDir      string
-	EncoderPath   string
-	DecoderPath   string
-	JoinerPath    string
-	TokensPath    string
-	VADPath       string
+	ParakeetReady   bool
+	VADReady        bool
+	ParakeetPartial bool // some but not all Parakeet files present
+	ModelDir        string
+	EncoderPath     string
+	DecoderPath     string
+	JoinerPath      string
+	TokensPath      string
+	VADPath         string
 }
 
 // Manager handles model download, extraction, and verification.
@@ -53,10 +54,20 @@ func (m *Manager) Check() *Status {
 		VADPath:     filepath.Join(m.modelDir, SileroVADFile),
 	}
 
-	s.ParakeetReady = allFilesExist(
-		s.EncoderPath, s.DecoderPath, s.JoinerPath, s.TokensPath,
-	)
+	files := []string{s.EncoderPath, s.DecoderPath, s.JoinerPath, s.TokensPath}
+	s.ParakeetReady = allFilesExist(files...)
 	s.VADReady = fileExists(s.VADPath)
+
+	// Detect partial download (some files exist but not all)
+	if !s.ParakeetReady {
+		count := 0
+		for _, f := range files {
+			if fileExists(f) {
+				count++
+			}
+		}
+		s.ParakeetPartial = count > 0
+	}
 
 	return s
 }
@@ -71,6 +82,8 @@ func (s *Status) String() string {
 	parakeet := "not downloaded"
 	if s.ParakeetReady {
 		parakeet = "ready"
+	} else if s.ParakeetPartial {
+		parakeet = "incomplete (run 'tomoe model download --force')"
 	}
 	vad := "not downloaded"
 	if s.VADReady {
@@ -91,6 +104,12 @@ func (m *Manager) Download(force bool) error {
 
 	// Download Parakeet TDT archive
 	if force || !status.ParakeetReady {
+		if status.ParakeetPartial {
+			fmt.Println("Incomplete Parakeet model detected, re-downloading...")
+			// Clean up partial extraction
+			parakeetDir := filepath.Join(m.modelDir, ParakeetSubdir)
+			os.RemoveAll(parakeetDir)
+		}
 		fmt.Println("Downloading Parakeet TDT 0.6B v3 INT8 model...")
 		if err := m.downloadAndExtractArchive(ParakeetArchiveURL); err != nil {
 			return fmt.Errorf("downloading Parakeet model: %w", err)
