@@ -229,37 +229,105 @@ body {
 
 /* Session list */
 .session-list {
-  padding: 16px;
-}
-
-.session-item {
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
   padding: 12px;
-  background: var(--surface);
-  border-radius: 8px;
-  margin-bottom: 8px;
-  cursor: pointer;
-  transition: background 0.15s;
 }
 
-.session-item:hover {
-  background: var(--surface-hover);
-}
-
-.session-item.selected {
-  background: var(--surface-hover);
-  border: 1px solid var(--primary);
-}
-
-.session-item .session-title {
-  font-weight: 600;
-}
-
-.session-item .session-meta {
+.session-count {
   font-size: 12px;
   color: var(--text-dim);
+}
+
+/* Accordion */
+.accordion-item {
+  background: var(--surface);
+  border-radius: 8px;
+  margin-bottom: 6px;
+  border: 1px solid transparent;
+  transition: border-color 0.15s;
+}
+
+.accordion-item.expanded {
+  border-color: var(--primary);
+}
+
+.accordion-header {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 12px;
+  cursor: pointer;
+  transition: background 0.15s;
+  border-radius: 8px;
+}
+
+.accordion-header:hover {
+  background: var(--surface-hover);
+}
+
+.accordion-chevron {
+  font-size: 10px;
+  color: var(--text-dim);
+  flex-shrink: 0;
+  width: 16px;
+  text-align: center;
+}
+
+.accordion-info {
+  flex: 1;
+  min-width: 0;
+}
+
+.accordion-info .session-title {
+  font-weight: 600;
+  font-size: 14px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.accordion-info .session-meta {
+  font-size: 12px;
+  color: var(--text-dim);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.accordion-actions {
+  display: flex;
+  gap: 6px;
+  flex-shrink: 0;
+}
+
+.accordion-body {
+  padding: 0 12px 12px 38px;
+  max-height: 300px;
+  overflow-y: auto;
+  border-top: 1px solid var(--border);
+  margin: 0 12px;
+  padding-top: 10px;
+}
+
+.accordion-body::-webkit-scrollbar {
+  width: 6px;
+}
+
+.accordion-body::-webkit-scrollbar-track {
+  background: var(--bg);
+}
+
+.accordion-body::-webkit-scrollbar-thumb {
+  background: var(--border);
+  border-radius: 3px;
+}
+
+.btn-sm {
+  padding: 4px 10px;
+  font-size: 12px;
+}
+
+.btn-danger {
+  color: var(--primary) !important;
 }
 
 /* Settings panel */
@@ -351,4 +419,80 @@ body {
 
 .panel-header h2 {
   font-size: 16px;
+}
+
+/* Responsive */
+@media (max-width: 600px) {
+  .toolbar {
+    flex-wrap: wrap;
+    gap: 8px;
+    padding: 8px 12px;
+  }
+
+  .toolbar select {
+    max-width: none;
+    flex: 1 1 calc(50% - 8px);
+    min-width: 0;
+  }
+
+  .accordion-header {
+    flex-wrap: wrap;
+    gap: 6px;
+  }
+
+  .accordion-actions {
+    width: 100%;
+    padding-left: 26px;
+    justify-content: flex-end;
+  }
+
+  .accordion-body {
+    padding-left: 12px;
+    margin: 0 8px;
+  }
+
+  .segment {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 2px;
+  }
+
+  .segment .timestamp {
+    width: 100%;
+  }
+
+  .dialog {
+    min-width: auto;
+    margin: 16px;
+    width: calc(100% - 32px);
+  }
+
+  .status-bar {
+    flex-wrap: wrap;
+    gap: 8px;
+  }
+
+  .settings-panel {
+    padding: 12px;
+  }
+
+  .setting-row {
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 4px;
+  }
+}
+
+@media (max-width: 400px) {
+  .toolbar select {
+    flex: 1 1 100%;
+  }
+
+  .accordion-info .session-title {
+    font-size: 13px;
+  }
+
+  .accordion-info .session-meta {
+    font-size: 11px;
+  }
 }

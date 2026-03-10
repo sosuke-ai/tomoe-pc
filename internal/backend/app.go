@@ -233,42 +233,50 @@ func (a *App) StartSession(micDevice, monitorDevice string) error {
 }
 
 // StopSession stops the current live transcription session and saves it.
+// Returns immediately after stopping the coordinator; audio encoding and
+// session saving happen in the background so the UI stays responsive.
 func (a *App) StopSession() (*session.Session, error) {
 	a.fixSignals()
 	a.mu.Lock()
-	defer a.mu.Unlock()
 
 	if !a.recording || a.coordinator == nil {
+		a.mu.Unlock()
 		return nil, fmt.Errorf("no session in progress")
 	}
 
-	a.coordinator.Stop()
-	a.recording = false
-
-	// Finalize session
-	a.currentSess.EndedAt = time.Now()
-	a.currentSess.Duration = a.currentSess.EndedAt.Sub(a.currentSess.CreatedAt).Seconds()
-
-	// Save audio as MP3
-	samples := a.coordinator.AudioSamples()
-	if len(samples) > 0 {
-		audioPath := config.SessionDir() + "/" + a.currentSess.ID + "/audio.mp3"
-		if err := session.SaveAudioMP3(samples, 16000, audioPath); err == nil {
-			a.currentSess.AudioPath = audioPath
-		}
-	}
-
-	// Save session
-	if err := a.store.Save(a.currentSess); err != nil {
-		return a.currentSess, fmt.Errorf("saving session: %w", err)
-	}
-
-	wailsRuntime.EventsEmit(a.ctx, "session:stopped", a.currentSess.ID)
-	wailsRuntime.EventsEmit(a.ctx, "session:saved", a.currentSess.ID)
-
+	coordinator := a.coordinator
 	sess := a.currentSess
+	a.recording = false
 	a.currentSess = nil
 	a.coordinator = nil
+	a.mu.Unlock()
+
+	// Stop coordinator (waits for pipeline flush — typically < 1s)
+	coordinator.Stop()
+
+	// Finalize timestamps
+	sess.EndedAt = time.Now()
+	sess.Duration = sess.EndedAt.Sub(sess.CreatedAt).Seconds()
+
+	// Notify UI immediately — recording is done
+	wailsRuntime.EventsEmit(a.ctx, "session:stopped", sess.ID)
+
+	// Save audio + session in background so UI doesn't block
+	go func() {
+		samples := coordinator.AudioSamples()
+		if len(samples) > 0 {
+			audioPath := config.SessionDir() + "/" + sess.ID + "/audio.mp3"
+			if err := session.SaveAudioMP3(samples, 16000, audioPath); err == nil {
+				sess.AudioPath = audioPath
+			}
+		}
+
+		if err := a.store.Save(sess); err != nil {
+			fmt.Printf("Error saving session: %v\n", err)
+		}
+
+		wailsRuntime.EventsEmit(a.ctx, "session:saved", sess.ID)
+	}()
 
 	return sess, nil
 }
