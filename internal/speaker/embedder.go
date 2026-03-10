@@ -4,6 +4,8 @@ import (
 	"fmt"
 
 	sherpa "github.com/k2-fsa/sherpa-onnx-go/sherpa_onnx"
+
+	"github.com/sosuke-ai/tomoe-pc/internal/sigfix"
 )
 
 const embeddingSampleRate = 16000
@@ -25,6 +27,7 @@ func NewEmbedder(modelPath string) (*Embedder, error) {
 	if extractor == nil {
 		return nil, fmt.Errorf("failed to create speaker embedding extractor (check model path: %s)", modelPath)
 	}
+	sigfix.AfterSherpa()
 
 	return &Embedder{
 		extractor: extractor,

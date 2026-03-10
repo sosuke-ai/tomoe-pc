@@ -9,12 +9,17 @@ import (
 	"github.com/wailsapp/wails/v2/pkg/options/linux"
 
 	"github.com/sosuke-ai/tomoe-pc/internal/backend"
+	"github.com/sosuke-ai/tomoe-pc/internal/config"
 )
 
 //go:embed all:frontend/dist
 var assets embed.FS
 
 func main() {
+	// Re-exec with LD_LIBRARY_PATH if GPU libraries are installed.
+	// Must happen before any cgo/sherpa-onnx code loads.
+	config.EnsureGPULibs()
+
 	app := backend.NewApp()
 
 	// Start system tray in background

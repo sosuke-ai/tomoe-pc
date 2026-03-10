@@ -15,6 +15,7 @@ import (
 	"github.com/sosuke-ai/tomoe-pc/internal/live"
 	"github.com/sosuke-ai/tomoe-pc/internal/models"
 	"github.com/sosuke-ai/tomoe-pc/internal/session"
+	"github.com/sosuke-ai/tomoe-pc/internal/sigfix"
 	"github.com/sosuke-ai/tomoe-pc/internal/speaker"
 	"github.com/sosuke-ai/tomoe-pc/internal/transcribe"
 )
@@ -58,6 +59,9 @@ func (a *App) Startup(ctx context.Context) {
 	}
 	a.cfg = cfg
 
+	// Initialize session store first — it has no heavy dependencies
+	a.store = session.NewStore(config.SessionDir())
+
 	// Initialize model manager
 	a.modelMgr = models.NewManager(cfg.Transcription.ModelPath)
 	status := a.modelMgr.Check()
@@ -90,9 +94,6 @@ func (a *App) Startup(ctx context.Context) {
 		}
 	}
 
-	// Initialize session store
-	a.store = session.NewStore(config.SessionDir())
-
 	// Register meeting hotkey
 	if err := a.registerHotkeys(); err != nil {
 		// Non-fatal — hotkey may not be available in all environments
@@ -118,18 +119,26 @@ func (a *App) BeforeClose(ctx context.Context) bool {
 	return false // allow window close → app exit
 }
 
+// fixSignals patches ONNX Runtime / WebKit signal handlers that lack SA_ONSTACK.
+// Called defensively on every frontend-bound method because WebKit/JSC can
+// reinstall the SIGSEGV handler after Startup() returns.
+func (a *App) fixSignals() { sigfix.AfterSherpa() }
+
 // ListAudioDevices returns available audio input devices.
 func (a *App) ListAudioDevices() ([]audio.DeviceInfo, error) {
+	a.fixSignals()
 	return audio.ListDevices()
 }
 
 // ListMonitorSources returns available monitor (system audio) sources.
 func (a *App) ListMonitorSources() ([]audio.DeviceInfo, error) {
+	a.fixSignals()
 	return audio.ListMonitorSources()
 }
 
 // StartSession begins a new live transcription session.
 func (a *App) StartSession(micDevice, monitorDevice string) error {
+	a.fixSignals()
 	a.mu.Lock()
 	defer a.mu.Unlock()
 
@@ -216,6 +225,7 @@ func (a *App) StartSession(micDevice, monitorDevice string) error {
 
 // StopSession stops the current live transcription session and saves it.
 func (a *App) StopSession() (*session.Session, error) {
+	a.fixSignals()
 	a.mu.Lock()
 	defer a.mu.Unlock()
 
@@ -256,16 +266,25 @@ func (a *App) StopSession() (*session.Session, error) {
 
 // GetSessionList returns all stored sessions.
 func (a *App) GetSessionList() ([]*session.Session, error) {
+	a.fixSignals()
+	if a.store == nil {
+		return nil, nil
+	}
 	return a.store.List()
 }
 
 // LoadSession returns a stored session by ID.
 func (a *App) LoadSession(id string) (*session.Session, error) {
+	a.fixSignals()
+	if a.store == nil {
+		return nil, fmt.Errorf("session store not initialized")
+	}
 	return a.store.Load(id)
 }
 
 // ExportSession exports a session in the specified format and returns the content.
 func (a *App) ExportSession(id, format string) (string, error) {
+	a.fixSignals()
 	sess, err := a.store.Load(id)
 	if err != nil {
 		return "", err
@@ -294,26 +313,31 @@ func (a *App) ExportSession(id, format string) (string, error) {
 
 // DeleteSession deletes a session by ID.
 func (a *App) DeleteSession(id string) error {
+	a.fixSignals()
 	return a.store.Delete(id)
 }
 
 // GetConfig returns the current configuration.
 func (a *App) GetConfig() *config.Config {
+	a.fixSignals()
 	return a.cfg
 }
 
 // GetGPUInfo returns GPU detection info.
 func (a *App) GetGPUInfo() *gpu.Info {
+	a.fixSignals()
 	return gpu.Detect()
 }
 
 // GetModelStatus returns the model download status.
 func (a *App) GetModelStatus() *models.Status {
+	a.fixSignals()
 	return a.modelMgr.Check()
 }
 
 // IsRecording returns whether a session is currently recording.
 func (a *App) IsRecording() bool {
+	a.fixSignals()
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	return a.recording

@@ -47,6 +47,11 @@ function App() {
         setDevices(devs || []);
         const mons = await window.go.backend.App.ListMonitorSources();
         setMonitors(mons || []);
+        // Auto-select default monitor source (for speaker/system audio capture)
+        if (mons && mons.length > 0 && !monitorDevice) {
+          const def = mons.find((m: DeviceInfo) => m.IsDefault);
+          setMonitorDevice(def ? def.Name : mons[0].Name);
+        }
       }
     } catch (e) {
       console.error('Failed to load devices:', e);

@@ -1,4 +1,4 @@
-package transcribe
+package sigfix
 
 /*
 #include <signal.h>
@@ -7,6 +7,7 @@ package transcribe
 // ONNX Runtime installs a SIGSEGV handler without SA_ONSTACK, which
 // conflicts with Go's signal handling and causes "non-Go code set up
 // signal handler without SA_ONSTACK flag" fatal errors.
+// Must be called after every sherpa-onnx object creation.
 static void fixOnnxSignalHandler() {
 	struct sigaction sa;
 	if (sigaction(SIGSEGV, NULL, &sa) == 0) {
@@ -19,8 +20,10 @@ static void fixOnnxSignalHandler() {
 */
 import "C"
 
-// fixSignalHandlers patches ONNX Runtime's signal handlers to be
-// compatible with Go's runtime. Must be called after sherpa-onnx init.
-func fixSignalHandlers() {
+// AfterSherpa patches ONNX Runtime's signal handlers to be compatible
+// with Go's runtime. Must be called after every sherpa-onnx object
+// creation (recognizer, VAD, embedder, etc.) since each creation may
+// reinstall the handler without SA_ONSTACK.
+func AfterSherpa() {
 	C.fixOnnxSignalHandler()
 }

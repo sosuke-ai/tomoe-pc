@@ -7,7 +7,7 @@ import (
 
 	sherpa "github.com/k2-fsa/sherpa-onnx-go/sherpa_onnx"
 
-	"github.com/sosuke-ai/tomoe-pc/internal/config"
+	"github.com/sosuke-ai/tomoe-pc/internal/sigfix"
 )
 
 const sampleRate = 16000
@@ -20,18 +20,6 @@ type parakeetEngine struct {
 
 // NewEngine creates a transcription engine with the given config.
 func NewEngine(cfg Config) (Engine, error) {
-	// Prepend tomoe lib dir to LD_LIBRARY_PATH so ONNX Runtime can find
-	// GPU provider .so files (installed by `make install-gpu`).
-	libDir := config.LibDir()
-	if _, err := os.Stat(libDir); err == nil {
-		cur := os.Getenv("LD_LIBRARY_PATH")
-		if cur == "" {
-			_ = os.Setenv("LD_LIBRARY_PATH", libDir)
-		} else if !strings.Contains(cur, libDir) {
-			_ = os.Setenv("LD_LIBRARY_PATH", libDir+":"+cur)
-		}
-	}
-
 	provider := "cpu"
 	numThreads := cfg.NumThreads
 	if numThreads <= 0 {
@@ -69,7 +57,7 @@ func NewEngine(cfg Config) (Engine, error) {
 
 	// ONNX Runtime installs a SIGSEGV handler without SA_ONSTACK, which
 	// conflicts with Go's signal handling. Fix it after initialization.
-	fixSignalHandlers()
+	sigfix.AfterSherpa()
 
 	var vadConfig *sherpa.VadModelConfig
 	if cfg.VADPath != "" {
@@ -186,6 +174,7 @@ func (e *parakeetEngine) transcribeWithVAD(samples []float32, duration float64) 
 		return nil, fmt.Errorf("failed to create VAD (check model path)")
 	}
 	defer sherpa.DeleteVoiceActivityDetector(vad)
+	sigfix.AfterSherpa()
 
 	// Feed audio to VAD in windows
 	windowSize := e.vadConfig.SileroVad.WindowSize

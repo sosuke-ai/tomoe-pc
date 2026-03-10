@@ -8,6 +8,7 @@ import (
 
 	"github.com/sosuke-ai/tomoe-pc/internal/audio"
 	"github.com/sosuke-ai/tomoe-pc/internal/session"
+	"github.com/sosuke-ai/tomoe-pc/internal/sigfix"
 )
 
 const (
@@ -39,6 +40,7 @@ func (c *Coordinator) processPipeline(ctx context.Context, sc *audio.StreamCaptu
 		return
 	}
 	defer sherpa.DeleteVoiceActivityDetector(vad)
+	sigfix.AfterSherpa()
 
 	windows := sc.Windows()
 	for {
