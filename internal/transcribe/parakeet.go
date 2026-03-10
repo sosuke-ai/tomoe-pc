@@ -67,6 +67,10 @@ func NewEngine(cfg Config) (Engine, error) {
 		return nil, fmt.Errorf("failed to create offline recognizer (check model paths and provider)")
 	}
 
+	// ONNX Runtime installs a SIGSEGV handler without SA_ONSTACK, which
+	// conflicts with Go's signal handling. Fix it after initialization.
+	fixSignalHandlers()
+
 	var vadConfig *sherpa.VadModelConfig
 	if cfg.VADPath != "" {
 		vadConfig = &sherpa.VadModelConfig{
