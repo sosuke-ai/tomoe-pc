@@ -1,7 +1,8 @@
 // monitor-test: diagnostic tool to test monitor source capture.
 // Records 10 seconds from a PulseAudio monitor source, writes two files:
-//   raw.pcm   — unprocessed 16kHz mono float32
-//   dsp.pcm   — after DC removal, HPF, normalize, noise gate
+//
+//	raw.pcm   — unprocessed 16kHz mono float32
+//	dsp.pcm   — after DC removal, HPF, normalize, noise gate
 //
 // Play back with: aplay -f FLOAT_LE -r 16000 -c 1 raw.pcm
 // Or convert: ffmpeg -f f32le -ar 16000 -ac 1 -i raw.pcm raw.wav
@@ -131,11 +132,11 @@ func writeF32(path string, samples []float32) error {
 	if err != nil {
 		return err
 	}
-	defer f.Close()
+	defer func() { _ = f.Close() }()
 	for _, s := range samples {
 		if err := binary.Write(f, binary.LittleEndian, s); err != nil {
 			return err
 		}
 	}
-	return nil
+	return f.Close()
 }
