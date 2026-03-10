@@ -1,4 +1,4 @@
-.PHONY: dev-deps dev-tools fmt lint vet test test-integration test-coverage build build-gui build-cuda package install install-gpu clean download-model dev-gui
+.PHONY: dev-deps dev-tools stage-frontend fmt lint vet test test-integration test-coverage build build-gui build-cuda package install install-gpu clean download-model dev-gui
 
 BINARY      := tomoe
 GUI_BINARY  := tomoe-gui
@@ -30,21 +30,33 @@ dev-tools: ## Install Go development tools (golangci-lint, goimports, wails)
 	go install golang.org/x/tools/cmd/goimports@latest
 	go install github.com/wailsapp/wails/v2/cmd/wails@latest
 
+## Frontend staging (needed for go:embed in cmd/tomoe-gui) ────────────
+
+stage-frontend: ## Build frontend and stage dist for go:embed
+	@if [ -d frontend ] && command -v npm >/dev/null 2>&1; then \
+		(cd frontend && npm install --silent && npm run build) && \
+		mkdir -p cmd/tomoe-gui/frontend && \
+		rm -rf cmd/tomoe-gui/frontend/dist && \
+		cp -r frontend/dist cmd/tomoe-gui/frontend/dist; \
+	elif [ ! -d cmd/tomoe-gui/frontend/dist ]; then \
+		echo "Warning: frontend/dist not staged (npm not available). Go tools may fail on go:embed."; \
+	fi
+
 ## Code quality ───────────────────────────────────────────────────────
 
 fmt: ## Format Go source files
 	gofmt -w .
 	goimports -w .
 
-lint: ## Run golangci-lint
+lint: stage-frontend ## Run golangci-lint
 	golangci-lint run ./...
 
-vet: ## Run go vet
+vet: stage-frontend ## Run go vet
 	go vet ./...
 
 ## Testing ────────────────────────────────────────────────────────────
 
-test: ## Run unit tests
+test: stage-frontend ## Run unit tests
 	go test $(GOFLAGS) ./...
 
 test-integration: ## Run integration tests (requires model + hardware)
@@ -61,6 +73,7 @@ build: ## Build CLI binary (and GUI if webkit2gtk available)
 ifeq ($(HAS_WEBKIT),yes)
 	@echo "webkit2gtk-4.1 detected, building frontend + GUI..."
 	cd frontend && npm install --silent && npm run build
+	mkdir -p cmd/tomoe-gui/frontend
 	rm -rf cmd/tomoe-gui/frontend/dist
 	cp -r frontend/dist cmd/tomoe-gui/frontend/dist
 	CGO_ENABLED=1 go build $(GOFLAGS) $(LDFLAGS) -tags production,webkit2_41 -o $(GUI_BINARY) ./cmd/tomoe-gui
@@ -69,6 +82,7 @@ else
 endif
 
 build-gui: build-frontend ## Build GUI binary only (requires webkit2gtk-4.1)
+	mkdir -p cmd/tomoe-gui/frontend
 	rm -rf cmd/tomoe-gui/frontend/dist
 	cp -r frontend/dist cmd/tomoe-gui/frontend/dist
 	CGO_ENABLED=1 go build $(GOFLAGS) $(LDFLAGS) -tags production,webkit2_41 -o $(GUI_BINARY) ./cmd/tomoe-gui

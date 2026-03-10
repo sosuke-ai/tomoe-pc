@@ -32,15 +32,6 @@ jobs:
             libasound-dev portaudio19-dev libportaudio2 libpulse-dev \
             libwebkit2gtk-4.1-dev libappindicator3-dev libgtk-3-dev
 
-      - name: Build frontend
-        run: cd frontend && npm install --silent && npm run build
-
-      - name: Stage frontend dist for go:embed
-        run: |
-          mkdir -p cmd/tomoe-gui/frontend
-          rm -rf cmd/tomoe-gui/frontend/dist
-          cp -r frontend/dist cmd/tomoe-gui/frontend/dist
-
       - name: Verify go.mod is tidy
         run: |
           go mod tidy
@@ -52,11 +43,8 @@ jobs:
       - name: Test
         run: make test
 
-      - name: Build CLI
-        run: CGO_ENABLED=1 go build -v -o tomoe ./cmd/tomoe
-
-      - name: Build GUI
-        run: CGO_ENABLED=1 go build -v -tags production,webkit2_41 -o tomoe-gui ./cmd/tomoe-gui
+      - name: Build
+        run: make build
 
   lint:
     runs-on: ubuntu-24.04
@@ -69,6 +57,11 @@ jobs:
         with:
           go-version: "1.22"
 
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "18"
+
       - name: Install system dependencies
         run: |
           sudo apt-get update
@@ -78,19 +71,8 @@ jobs:
             libasound-dev portaudio19-dev libportaudio2 libpulse-dev \
             libwebkit2gtk-4.1-dev libappindicator3-dev libgtk-3-dev
 
-      - name: Setup Node.js
-        uses: actions/setup-node@v4
-        with:
-          node-version: "18"
-
-      - name: Build frontend
-        run: cd frontend && npm install --silent && npm run build
-
-      - name: Stage frontend dist for go:embed
-        run: |
-          mkdir -p cmd/tomoe-gui/frontend
-          rm -rf cmd/tomoe-gui/frontend/dist
-          cp -r frontend/dist cmd/tomoe-gui/frontend/dist
+      - name: Stage frontend for go:embed
+        run: make stage-frontend
 
       - name: golangci-lint
         uses: golangci/golangci-lint-action@v7
