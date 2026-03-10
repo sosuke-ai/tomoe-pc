@@ -4,7 +4,8 @@ BINARY    := tomoe
 VERSION   := $(shell git describe --tags --always --dirty 2>/dev/null || echo "dev")
 LDFLAGS   := -ldflags "-X main.Version=$(VERSION)"
 GOFLAGS   := -v
-INSTALL_DIR := /usr/local/bin
+GOBIN       := $(shell go env GOPATH)/bin
+INSTALL_DIR := $(GOBIN)
 LINT_VERSION := v1.64.8
 
 ## Development setup ──────────────────────────────────────────────────
@@ -58,7 +59,7 @@ package: build ## Create release tarball
 
 ## Install / Clean ────────────────────────────────────────────────────
 
-install: build ## Install to /usr/local/bin
+install: build ## Install to GOPATH/bin
 	install -m 755 $(BINARY) $(INSTALL_DIR)/$(BINARY)
 
 clean: ## Remove build artifacts
