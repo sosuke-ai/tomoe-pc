@@ -6,6 +6,7 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"github.com/sosuke-ai/tomoe-pc/internal/audio"
 	"github.com/sosuke-ai/tomoe-pc/internal/config"
 	"github.com/sosuke-ai/tomoe-pc/internal/gpu"
 	"github.com/sosuke-ai/tomoe-pc/internal/models"
@@ -32,6 +33,7 @@ func init() {
 	rootCmd.AddCommand(configCmd)
 	rootCmd.AddCommand(modelCmd)
 	rootCmd.AddCommand(transcribeCmd)
+	rootCmd.AddCommand(devicesCmd)
 }
 
 // startCmd is an alias for the root command.
@@ -250,6 +252,31 @@ var transcribeCmd = &cobra.Command{
 			fmt.Fprintf(os.Stderr, "Duration: %.1fs\n", result.Duration)
 		}
 
+		return nil
+	},
+}
+
+var devicesCmd = &cobra.Command{
+	Use:   "devices",
+	Short: "List audio input devices",
+	RunE: func(cmd *cobra.Command, args []string) error {
+		devices, err := audio.ListDevices()
+		if err != nil {
+			return fmt.Errorf("listing audio devices: %w", err)
+		}
+
+		if len(devices) == 0 {
+			fmt.Println("No audio capture devices found.")
+			return nil
+		}
+
+		for _, d := range devices {
+			def := ""
+			if d.IsDefault {
+				def = " (default)"
+			}
+			fmt.Printf("  %s%s\n", d.Name, def)
+		}
 		return nil
 	},
 }

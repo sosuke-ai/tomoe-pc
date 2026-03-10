@@ -10,6 +10,7 @@ require (
 )
 
 require (
+	github.com/gen2brain/malgo v0.11.24 // indirect
 	github.com/inconshreveable/mousetrap v1.1.0 // indirect
 	github.com/k2-fsa/sherpa-onnx-go-linux v1.12.28 // indirect
 	github.com/k2-fsa/sherpa-onnx-go-macos v1.12.28 // indirect
