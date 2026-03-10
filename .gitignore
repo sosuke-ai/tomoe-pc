@@ -8,6 +8,14 @@
 *.so
 *.dylib
 /tomoe
+/tomoe-gui
+
+# Frontend build artifacts
+frontend/node_modules/
+frontend/dist/
+!frontend/dist/.gitkeep
+cmd/tomoe-gui/frontend/dist/
+!cmd/tomoe-gui/frontend/dist/index.html
 
 # Test binary, built with `go test -c`
 *.test

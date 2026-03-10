@@ -107,7 +107,7 @@ func (e *parakeetEngine) TranscribeFile(path string) (*Result, error) {
 		if err != nil {
 			return nil, fmt.Errorf("converting %s to WAV: %w", path, err)
 		}
-		defer os.Remove(converted)
+		defer func() { _ = os.Remove(converted) }()
 		wavPath = converted
 	}
 

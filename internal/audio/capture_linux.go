@@ -3,6 +3,7 @@ package audio
 import (
 	"encoding/binary"
 	"fmt"
+	"strings"
 	"sync"
 
 	"github.com/gen2brain/malgo"
@@ -36,10 +37,16 @@ func listDevices() ([]DeviceInfo, error) {
 
 	devices := make([]DeviceInfo, len(infos))
 	for i, info := range infos {
+		name := info.Name()
+		dt := Input
+		if strings.Contains(strings.ToLower(name), ".monitor") {
+			dt = Monitor
+		}
 		devices[i] = DeviceInfo{
-			ID:        info.ID.String(),
-			Name:      info.Name(),
-			IsDefault: info.IsDefault != 0,
+			ID:         info.ID.String(),
+			Name:       name,
+			IsDefault:  info.IsDefault != 0,
+			DeviceType: dt,
 		}
 	}
 	return devices, nil

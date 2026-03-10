@@ -20,9 +20,9 @@ func TestDisplayServer(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			orig := os.Getenv("XDG_SESSION_TYPE")
-			defer os.Setenv("XDG_SESSION_TYPE", orig)
+			defer func() { _ = os.Setenv("XDG_SESSION_TYPE", orig) }()
 
-			os.Setenv("XDG_SESSION_TYPE", tt.env)
+			_ = os.Setenv("XDG_SESSION_TYPE", tt.env)
 			got := DisplayServer()
 			if got != tt.want {
 				t.Errorf("DisplayServer() = %q, want %q", got, tt.want)

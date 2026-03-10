@@ -1,10 +1,21 @@
 package audio
 
+// DeviceType indicates whether a device is a regular input or a monitor source.
+type DeviceType int
+
+const (
+	// Input is a regular audio input device (microphone).
+	Input DeviceType = iota
+	// Monitor is a PulseAudio/PipeWire monitor source (system audio loopback).
+	Monitor
+)
+
 // DeviceInfo describes an audio input device.
 type DeviceInfo struct {
-	ID        string
-	Name      string
-	IsDefault bool
+	ID         string
+	Name       string
+	IsDefault  bool
+	DeviceType DeviceType
 }
 
 // Capturer captures audio from a microphone.

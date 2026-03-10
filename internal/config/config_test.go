@@ -13,6 +13,9 @@ func TestDefaultConfig(t *testing.T) {
 	if cfg.Hotkey.Binding != "Super+Shift+R" {
 		t.Errorf("Hotkey.Binding = %q, want %q", cfg.Hotkey.Binding, "Super+Shift+R")
 	}
+	if cfg.Hotkey.MeetingBinding != "Super+Shift+M" {
+		t.Errorf("Hotkey.MeetingBinding = %q, want %q", cfg.Hotkey.MeetingBinding, "Super+Shift+M")
+	}
 	if cfg.Audio.Device != "default" {
 		t.Errorf("Audio.Device = %q, want %q", cfg.Audio.Device, "default")
 	}
@@ -27,6 +30,16 @@ func TestDefaultConfig(t *testing.T) {
 	}
 	if !cfg.Output.Clipboard {
 		t.Error("Output.Clipboard = false, want true")
+	}
+	// Phase 2 meeting defaults
+	if cfg.Meeting.DefaultSources != "both" {
+		t.Errorf("Meeting.DefaultSources = %q, want %q", cfg.Meeting.DefaultSources, "both")
+	}
+	if cfg.Meeting.SpeakerThreshold != 0.65 {
+		t.Errorf("Meeting.SpeakerThreshold = %v, want 0.65", cfg.Meeting.SpeakerThreshold)
+	}
+	if !cfg.Meeting.AutoSave {
+		t.Error("Meeting.AutoSave = false, want true")
 	}
 }
 
@@ -161,6 +174,58 @@ func TestModelDirDefaultsToHome(t *testing.T) {
 	got := ModelDir()
 	if !strings.HasSuffix(got, filepath.Join(".local", "share", "tomoe", "models")) {
 		t.Errorf("ModelDir() = %q, want suffix %q", got, ".local/share/tomoe/models")
+	}
+}
+
+func TestBackwardCompatPhase1Config(t *testing.T) {
+	// A Phase 1 config (without [meeting] section) should load without error
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.toml")
+
+	phase1Config := `[hotkey]
+binding = "Super+Shift+R"
+
+[audio]
+device = "default"
+
+[transcription]
+gpu_enabled = true
+model_path = "/home/user/.local/share/tomoe/models"
+
+[output]
+auto_paste = true
+clipboard = true
+`
+	if err := os.WriteFile(path, []byte(phase1Config), 0o644); err != nil {
+		t.Fatalf("WriteFile() error: %v", err)
+	}
+
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load() error loading Phase 1 config: %v", err)
+	}
+
+	if cfg.Hotkey.Binding != "Super+Shift+R" {
+		t.Errorf("Hotkey.Binding = %q, want %q", cfg.Hotkey.Binding, "Super+Shift+R")
+	}
+	if !cfg.Transcription.GPUEnabled {
+		t.Error("GPUEnabled should be true")
+	}
+	// Meeting section should have zero values (not loaded)
+	if cfg.Meeting.DefaultSources != "" {
+		t.Errorf("Meeting.DefaultSources = %q, want empty (not in Phase 1 config)", cfg.Meeting.DefaultSources)
+	}
+	if cfg.Meeting.SpeakerThreshold != 0 {
+		t.Errorf("Meeting.SpeakerThreshold = %v, want 0 (not in Phase 1 config)", cfg.Meeting.SpeakerThreshold)
+	}
+}
+
+func TestSessionDir(t *testing.T) {
+	t.Setenv("XDG_DATA_HOME", "/custom/data")
+	got := SessionDir()
+	want := "/custom/data/tomoe/sessions"
+	if got != want {
+		t.Errorf("SessionDir() = %q, want %q", got, want)
 	}
 }
 

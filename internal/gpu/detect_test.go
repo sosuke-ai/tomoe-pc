@@ -22,7 +22,7 @@ func TestDetectSingleGPU(t *testing.T) {
 	defer func() { queryNvidiaSMI = original }()
 
 	queryNvidiaSMI = mockNvidiaSMI(map[string]string{
-		"--query-gpu=driver_version --format=csv,noheader,nounits":   "560.35.03",
+		"--query-gpu=driver_version --format=csv,noheader,nounits":    "560.35.03",
 		"--query-gpu=name,memory.total --format=csv,noheader,nounits": "NVIDIA GeForce RTX 4090, 24564",
 	})
 
@@ -50,7 +50,7 @@ func TestDetectMultiGPU(t *testing.T) {
 	defer func() { queryNvidiaSMI = original }()
 
 	queryNvidiaSMI = mockNvidiaSMI(map[string]string{
-		"--query-gpu=driver_version --format=csv,noheader,nounits":   "560.35.03",
+		"--query-gpu=driver_version --format=csv,noheader,nounits":    "560.35.03",
 		"--query-gpu=name,memory.total --format=csv,noheader,nounits": "NVIDIA GeForce RTX 4090, 24564\nNVIDIA GeForce RTX 3080, 10240",
 	})
 
@@ -88,7 +88,7 @@ func TestDetectInsufficientVRAM(t *testing.T) {
 	defer func() { queryNvidiaSMI = original }()
 
 	queryNvidiaSMI = mockNvidiaSMI(map[string]string{
-		"--query-gpu=driver_version --format=csv,noheader,nounits":   "560.35.03",
+		"--query-gpu=driver_version --format=csv,noheader,nounits":    "560.35.03",
 		"--query-gpu=name,memory.total --format=csv,noheader,nounits": "NVIDIA GeForce GTX 1650, 3904",
 	})
 
@@ -110,7 +110,7 @@ func TestDetectExactMinVRAM(t *testing.T) {
 	defer func() { queryNvidiaSMI = original }()
 
 	queryNvidiaSMI = mockNvidiaSMI(map[string]string{
-		"--query-gpu=driver_version --format=csv,noheader,nounits":   "560.35.03",
+		"--query-gpu=driver_version --format=csv,noheader,nounits":    "560.35.03",
 		"--query-gpu=name,memory.total --format=csv,noheader,nounits": "NVIDIA GeForce RTX 3060, 4096",
 	})
 

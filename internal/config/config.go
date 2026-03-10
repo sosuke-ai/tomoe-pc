@@ -15,11 +15,13 @@ type Config struct {
 	Audio         AudioConfig         `toml:"audio"`
 	Transcription TranscriptionConfig `toml:"transcription"`
 	Output        OutputConfig        `toml:"output"`
+	Meeting       MeetingConfig       `toml:"meeting"`
 }
 
 // HotkeyConfig holds global hotkey settings.
 type HotkeyConfig struct {
-	Binding string `toml:"binding"`
+	Binding        string `toml:"binding"`
+	MeetingBinding string `toml:"meeting_binding"`
 }
 
 // AudioConfig holds audio capture settings.
@@ -39,11 +41,22 @@ type OutputConfig struct {
 	Clipboard bool `toml:"clipboard"`
 }
 
+// MeetingConfig holds Phase 2 meeting transcription settings.
+type MeetingConfig struct {
+	DefaultSources     string  `toml:"default_sources"`      // "mic", "monitor", "both"
+	MonitorDevice      string  `toml:"monitor_device"`       // monitor source device name
+	SpeakerThreshold   float64 `toml:"speaker_threshold"`    // cosine similarity threshold
+	MaxSpeechDuration  float64 `toml:"max_speech_duration"`  // seconds
+	MinSilenceDuration float64 `toml:"min_silence_duration"` // seconds
+	AutoSave           bool    `toml:"auto_save"`            // save session on stop
+}
+
 // DefaultConfig returns a Config with sensible defaults.
 func DefaultConfig() *Config {
 	return &Config{
 		Hotkey: HotkeyConfig{
-			Binding: "Super+Shift+R",
+			Binding:        "Super+Shift+R",
+			MeetingBinding: "Super+Shift+M",
 		},
 		Audio: AudioConfig{
 			Device: "default",
@@ -55,6 +68,13 @@ func DefaultConfig() *Config {
 		Output: OutputConfig{
 			AutoPaste: true,
 			Clipboard: true,
+		},
+		Meeting: MeetingConfig{
+			DefaultSources:     "both",
+			SpeakerThreshold:   0.65,
+			MaxSpeechDuration:  30.0,
+			MinSilenceDuration: 0.5,
+			AutoSave:           true,
 		},
 	}
 }
@@ -85,6 +105,11 @@ func ModelDir() string {
 		dir = filepath.Join(home, ".local", "share")
 	}
 	return filepath.Join(dir, "tomoe", "models")
+}
+
+// SessionDir returns the session storage directory (~/.local/share/tomoe/sessions/).
+func SessionDir() string {
+	return filepath.Join(DataDir(), "sessions")
 }
 
 // DataDir returns the base data directory (~/.local/share/tomoe/).

@@ -15,15 +15,17 @@ import (
 
 // Status describes the state of downloaded models.
 type Status struct {
-	ParakeetReady   bool
-	VADReady        bool
-	ParakeetPartial bool // some but not all Parakeet files present
-	ModelDir        string
-	EncoderPath     string
-	DecoderPath     string
-	JoinerPath      string
-	TokensPath      string
-	VADPath         string
+	ParakeetReady         bool
+	VADReady              bool
+	SpeakerEmbeddingReady bool
+	ParakeetPartial       bool // some but not all Parakeet files present
+	ModelDir              string
+	EncoderPath           string
+	DecoderPath           string
+	JoinerPath            string
+	TokensPath            string
+	VADPath               string
+	SpeakerEmbeddingPath  string
 }
 
 // Manager handles model download, extraction, and verification.
@@ -46,17 +48,19 @@ func (m *Manager) Check() *Status {
 	parakeetDir := filepath.Join(m.modelDir, ParakeetSubdir)
 
 	s := &Status{
-		ModelDir:    m.modelDir,
-		EncoderPath: filepath.Join(parakeetDir, encoderFile),
-		DecoderPath: filepath.Join(parakeetDir, decoderFile),
-		JoinerPath:  filepath.Join(parakeetDir, joinerFile),
-		TokensPath:  filepath.Join(parakeetDir, tokensFile),
-		VADPath:     filepath.Join(m.modelDir, SileroVADFile),
+		ModelDir:             m.modelDir,
+		EncoderPath:          filepath.Join(parakeetDir, encoderFile),
+		DecoderPath:          filepath.Join(parakeetDir, decoderFile),
+		JoinerPath:           filepath.Join(parakeetDir, joinerFile),
+		TokensPath:           filepath.Join(parakeetDir, tokensFile),
+		VADPath:              filepath.Join(m.modelDir, SileroVADFile),
+		SpeakerEmbeddingPath: filepath.Join(m.modelDir, SpeakerEmbeddingFile),
 	}
 
 	files := []string{s.EncoderPath, s.DecoderPath, s.JoinerPath, s.TokensPath}
 	s.ParakeetReady = allFilesExist(files...)
 	s.VADReady = fileExists(s.VADPath)
+	s.SpeakerEmbeddingReady = fileExists(s.SpeakerEmbeddingPath)
 
 	// Detect partial download (some files exist but not all)
 	if !s.ParakeetReady {
@@ -89,8 +93,12 @@ func (s *Status) String() string {
 	if s.VADReady {
 		vad = "ready"
 	}
-	return fmt.Sprintf("Model dir: %s\nParakeet TDT INT8: %s\nSilero VAD: %s",
-		s.ModelDir, parakeet, vad)
+	speaker := "not downloaded"
+	if s.SpeakerEmbeddingReady {
+		speaker = "ready"
+	}
+	return fmt.Sprintf("Model dir: %s\nParakeet TDT INT8: %s\nSilero VAD: %s\nSpeaker Embedding: %s",
+		s.ModelDir, parakeet, vad, speaker)
 }
 
 // Download downloads and extracts all required models.
@@ -108,7 +116,7 @@ func (m *Manager) Download(force bool) error {
 			fmt.Println("Incomplete Parakeet model detected, re-downloading...")
 			// Clean up partial extraction
 			parakeetDir := filepath.Join(m.modelDir, ParakeetSubdir)
-			os.RemoveAll(parakeetDir)
+			_ = os.RemoveAll(parakeetDir)
 		}
 		fmt.Println("Downloading Parakeet TDT 0.6B v3 INT8 model...")
 		if err := m.downloadAndExtractArchive(ParakeetArchiveURL); err != nil {
@@ -131,6 +139,18 @@ func (m *Manager) Download(force bool) error {
 		fmt.Println("Silero VAD model already present, skipping.")
 	}
 
+	// Download speaker embedding model
+	if force || !status.SpeakerEmbeddingReady {
+		fmt.Println("Downloading speaker embedding model...")
+		speakerPath := filepath.Join(m.modelDir, SpeakerEmbeddingFile)
+		if err := downloadFile(SpeakerEmbeddingURL, speakerPath); err != nil {
+			return fmt.Errorf("downloading speaker embedding model: %w", err)
+		}
+		fmt.Println("Speaker embedding model downloaded.")
+	} else {
+		fmt.Println("Speaker embedding model already present, skipping.")
+	}
+
 	// Verify
 	final := m.Check()
 	if !final.Ready() {
@@ -140,13 +160,35 @@ func (m *Manager) Download(force bool) error {
 	return nil
 }
 
+// DownloadSpeakerModel downloads the speaker embedding model.
+// If force is true, re-downloads even if already present.
+func (m *Manager) DownloadSpeakerModel(force bool) error {
+	if err := os.MkdirAll(m.modelDir, 0o755); err != nil {
+		return fmt.Errorf("creating model directory: %w", err)
+	}
+
+	status := m.Check()
+	if !force && status.SpeakerEmbeddingReady {
+		fmt.Println("Speaker embedding model already present, skipping.")
+		return nil
+	}
+
+	fmt.Println("Downloading speaker embedding model...")
+	speakerPath := filepath.Join(m.modelDir, SpeakerEmbeddingFile)
+	if err := downloadFile(SpeakerEmbeddingURL, speakerPath); err != nil {
+		return fmt.Errorf("downloading speaker embedding model: %w", err)
+	}
+	fmt.Println("Speaker embedding model downloaded.")
+	return nil
+}
+
 // downloadAndExtractArchive downloads a tar.bz2 archive and extracts it to the model directory.
 func (m *Manager) downloadAndExtractArchive(url string) error {
 	resp, err := http.Get(url)
 	if err != nil {
 		return fmt.Errorf("HTTP GET: %w", err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	if resp.StatusCode != http.StatusOK {
 		return fmt.Errorf("HTTP %d: %s", resp.StatusCode, resp.Status)
@@ -197,10 +239,10 @@ func extractTarBz2(r io.Reader, destDir string) error {
 			}
 
 			if _, err := io.Copy(f, tarReader); err != nil {
-				f.Close()
+				_ = f.Close()
 				return fmt.Errorf("writing file %s: %w", target, err)
 			}
-			f.Close()
+			_ = f.Close()
 		}
 	}
 
@@ -213,7 +255,7 @@ func downloadFile(url, destPath string) error {
 	if err != nil {
 		return fmt.Errorf("HTTP GET: %w", err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	if resp.StatusCode != http.StatusOK {
 		return fmt.Errorf("HTTP %d: %s", resp.StatusCode, resp.Status)
@@ -227,7 +269,7 @@ func downloadFile(url, destPath string) error {
 	if err != nil {
 		return fmt.Errorf("creating file: %w", err)
 	}
-	defer f.Close()
+	defer func() { _ = f.Close() }()
 
 	bar := progressbar.DefaultBytes(resp.ContentLength, "downloading")
 	if _, err := io.Copy(io.MultiWriter(f, bar), resp.Body); err != nil {

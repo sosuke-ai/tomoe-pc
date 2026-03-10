@@ -33,7 +33,7 @@ func convertToWAV(srcPath string) (string, error) {
 		return "", fmt.Errorf("creating temp file: %w", err)
 	}
 	tmpPath := tmpFile.Name()
-	tmpFile.Close()
+	_ = tmpFile.Close()
 
 	cmd := exec.Command("ffmpeg",
 		"-i", srcPath,
@@ -44,7 +44,7 @@ func convertToWAV(srcPath string) (string, error) {
 		tmpPath,
 	)
 	if output, err := cmd.CombinedOutput(); err != nil {
-		os.Remove(tmpPath)
+		_ = os.Remove(tmpPath)
 		return "", fmt.Errorf("ffmpeg conversion failed: %w\n%s", err, output)
 	}
 
