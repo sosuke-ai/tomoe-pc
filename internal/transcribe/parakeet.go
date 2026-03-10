@@ -112,6 +112,15 @@ func (e *parakeetEngine) TranscribeSamples(samples []float32) (*Result, error) {
 	return e.transcribeDirect(samples, duration)
 }
 
+// TranscribeDirect transcribes pre-segmented audio without VAD.
+func (e *parakeetEngine) TranscribeDirect(samples []float32) (*Result, error) {
+	if len(samples) == 0 {
+		return &Result{}, nil
+	}
+	duration := float64(len(samples)) / float64(sampleRate)
+	return e.transcribeDirect(samples, duration)
+}
+
 // TranscribeFile transcribes an audio file (WAV, FLAC, or OGG).
 // Non-WAV formats are converted to WAV via ffmpeg before transcription.
 func (e *parakeetEngine) TranscribeFile(path string) (*Result, error) {
@@ -157,6 +166,9 @@ func (e *parakeetEngine) transcribeDirect(samples []float32, duration float64) (
 	e.recognizer.Decode(stream)
 
 	r := stream.GetResult()
+	if r == nil {
+		return &Result{Duration: duration}, nil
+	}
 
 	return &Result{
 		Text:       strings.TrimSpace(r.Text),
@@ -205,6 +217,10 @@ func (e *parakeetEngine) transcribeWithVAD(samples []float32, duration float64) 
 		e.recognizer.Decode(stream)
 
 		r := stream.GetResult()
+		if r == nil {
+			sherpa.DeleteOfflineStream(stream)
+			continue
+		}
 		text := strings.TrimSpace(r.Text)
 		if text != "" {
 			texts = append(texts, text)

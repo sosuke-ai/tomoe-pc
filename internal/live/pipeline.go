@@ -81,9 +81,9 @@ func (c *Coordinator) drainVAD(vad *sherpa.VoiceActivityDetector, source SourceT
 		// Apply DSP pipeline
 		samples := audio.ProcessPipeline(segment.Samples, vadSampleRate, -40)
 
-		// Transcribe (serialized for thread safety)
+		// Transcribe directly — audio is already VAD-segmented
 		c.transcribeMu.Lock()
-		result, err := c.cfg.Engine.TranscribeSamples(samples)
+		result, err := c.cfg.Engine.TranscribeDirect(samples)
 		c.transcribeMu.Unlock()
 
 		if err != nil || result == nil || strings.TrimSpace(result.Text) == "" {

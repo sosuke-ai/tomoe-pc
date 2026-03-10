@@ -12,7 +12,12 @@ type Result struct {
 // Engine wraps speech recognition capabilities.
 type Engine interface {
 	// TranscribeSamples transcribes raw float32 PCM audio at 16kHz.
+	// Uses VAD segmentation if configured.
 	TranscribeSamples(samples []float32) (*Result, error)
+
+	// TranscribeDirect transcribes pre-segmented audio without VAD.
+	// Use this when audio has already been segmented (e.g., by the live pipeline).
+	TranscribeDirect(samples []float32) (*Result, error)
 
 	// TranscribeFile transcribes an audio file (WAV, FLAC, or OGG).
 	TranscribeFile(path string) (*Result, error)
