@@ -39,7 +39,8 @@ func listDevices() ([]DeviceInfo, error) {
 	for i, info := range infos {
 		name := info.Name()
 		dt := Input
-		if strings.Contains(strings.ToLower(name), ".monitor") {
+		nameLower := strings.ToLower(name)
+		if strings.Contains(nameLower, ".monitor") || strings.HasPrefix(nameLower, "monitor of ") {
 			dt = Monitor
 		}
 		devices[i] = DeviceInfo{
