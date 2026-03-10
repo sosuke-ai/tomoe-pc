@@ -21,7 +21,6 @@ export default function SessionList({ onExport }: Props) {
 
   async function loadSessions() {
     try {
-      // @ts-ignore
       const list = await window.go.backend.App.GetSessionList();
       setSessions(list || []);
     } catch (e) {
@@ -31,7 +30,6 @@ export default function SessionList({ onExport }: Props) {
 
   async function handleDelete(id: string) {
     try {
-      // @ts-ignore
       await window.go.backend.App.DeleteSession(id);
       setSessions(prev => prev.filter(s => s.id !== id));
       if (selectedId === id) setSelectedId(null);

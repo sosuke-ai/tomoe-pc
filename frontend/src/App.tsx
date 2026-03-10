@@ -29,7 +29,6 @@ function App() {
 
   async function loadDevices() {
     try {
-      // @ts-ignore - Wails bindings are injected at runtime
       if (window.go?.backend?.App) {
         const devs = await window.go.backend.App.ListAudioDevices();
         setDevices(devs || []);
@@ -44,7 +43,6 @@ function App() {
   async function handleStart() {
     try {
       clearTranscript();
-      // @ts-ignore
       await window.go.backend.App.StartSession(micDevice, monitorDevice);
     } catch (e) {
       console.error('Failed to start session:', e);
@@ -53,7 +51,6 @@ function App() {
 
   async function handleStop(): Promise<Session | null> {
     try {
-      // @ts-ignore
       const sess = await window.go.backend.App.StopSession();
       resetSession();
       return sess;

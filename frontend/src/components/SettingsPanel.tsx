@@ -12,7 +12,6 @@ export default function SettingsPanel() {
 
   async function loadInfo() {
     try {
-      // @ts-ignore
       if (window.go?.backend?.App) {
         const cfg = await window.go.backend.App.GetConfig();
         setConfig(cfg);

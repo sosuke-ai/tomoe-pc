@@ -17,7 +17,6 @@ export default function ExportDialog({ sessionId, onClose }: Props) {
 
   async function handleExport() {
     try {
-      // @ts-ignore
       const content = await window.go.backend.App.ExportSession(sessionId, selectedFormat);
       // Copy to clipboard
       await navigator.clipboard.writeText(content);

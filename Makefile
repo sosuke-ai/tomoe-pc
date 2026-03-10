@@ -57,7 +57,10 @@ test-coverage: ## Run tests with coverage report
 build: ## Build CLI binary (and GUI if webkit2gtk available)
 	CGO_ENABLED=1 go build $(GOFLAGS) $(LDFLAGS) -o $(BINARY) ./cmd/tomoe
 ifeq ($(HAS_WEBKIT),yes)
-	@echo "webkit2gtk-4.1 detected, building GUI..."
+	@echo "webkit2gtk-4.1 detected, building frontend + GUI..."
+	cd frontend && npm install --silent && npm run build
+	rm -rf cmd/tomoe-gui/frontend/dist
+	cp -r frontend/dist cmd/tomoe-gui/frontend/dist
 	CGO_ENABLED=1 go build $(GOFLAGS) $(LDFLAGS) -tags production,webkit2_41 -o $(GUI_BINARY) ./cmd/tomoe-gui
 else
 	@echo "webkit2gtk-4.1 not found, skipping GUI build."
