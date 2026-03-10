@@ -1,4 +1,4 @@
-.PHONY: dev-deps dev-tools fmt lint vet test test-integration test-coverage build build-gui build-cuda package install clean download-model dev-gui
+.PHONY: dev-deps dev-tools fmt lint vet test test-integration test-coverage build build-gui build-cuda package install install-gpu clean download-model dev-gui
 
 BINARY      := tomoe
 GUI_BINARY  := tomoe-gui
@@ -8,6 +8,8 @@ GOFLAGS     := -v
 GOBIN       := $(shell go env GOPATH)/bin
 INSTALL_DIR := $(GOBIN)
 LINT_VERSION := v2.11.3
+SHERPA_VER   := v1.12.28
+TOMOE_LIB    := $(HOME)/.local/share/tomoe/lib
 
 # Auto-detect webkit2gtk for GUI build
 HAS_WEBKIT := $(shell pkg-config --exists webkit2gtk-4.1 2>/dev/null && echo yes || echo no)
@@ -93,6 +95,37 @@ install: build ## Install to GOPATH/bin
 ifeq ($(HAS_WEBKIT),yes)
 	install -m 755 $(GUI_BINARY) $(INSTALL_DIR)/$(GUI_BINARY)
 endif
+
+install-gpu: ## Install CUDA toolkit + sherpa-onnx GPU libraries for NVIDIA acceleration
+	@echo "=== Step 1: Installing CUDA 12 toolkit + cuDNN 9 ==="
+	@if ! dpkg -l cuda-toolkit-12-8 >/dev/null 2>&1; then \
+		echo "Adding NVIDIA CUDA repository..."; \
+		wget -q https://developer.download.nvidia.com/compute/cuda/repos/ubuntu2404/x86_64/cuda-keyring_1.1-1_all.deb -O /tmp/cuda-keyring.deb; \
+		sudo dpkg -i /tmp/cuda-keyring.deb; \
+		rm -f /tmp/cuda-keyring.deb; \
+		sudo apt-get update; \
+		sudo apt-get install -y cuda-toolkit-12-8 libcudnn9-cuda-12; \
+	else \
+		echo "CUDA toolkit already installed, skipping."; \
+	fi
+	@echo "=== Step 2: Downloading sherpa-onnx GPU libraries ($(SHERPA_VER)) ==="
+	mkdir -p $(TOMOE_LIB)
+	@if [ ! -f "$(TOMOE_LIB)/libonnxruntime_providers_cuda.so" ]; then \
+		echo "Downloading sherpa-onnx $(SHERPA_VER) CUDA 12 release..."; \
+		curl -L "https://github.com/k2-fsa/sherpa-onnx/releases/download/$(SHERPA_VER)/sherpa-onnx-$(SHERPA_VER)-cuda-12.x-cudnn-9.x-linux-x64-gpu.tar.bz2" \
+			| tar xjf - --strip-components=2 -C $(TOMOE_LIB) \
+				"sherpa-onnx-$(SHERPA_VER)-cuda-12.x-cudnn-9.x-linux-x64-gpu/lib/libonnxruntime.so" \
+				"sherpa-onnx-$(SHERPA_VER)-cuda-12.x-cudnn-9.x-linux-x64-gpu/lib/libonnxruntime_providers_cuda.so" \
+				"sherpa-onnx-$(SHERPA_VER)-cuda-12.x-cudnn-9.x-linux-x64-gpu/lib/libonnxruntime_providers_shared.so" \
+				"sherpa-onnx-$(SHERPA_VER)-cuda-12.x-cudnn-9.x-linux-x64-gpu/lib/libsherpa-onnx-c-api.so"; \
+	else \
+		echo "GPU libraries already present in $(TOMOE_LIB), skipping."; \
+	fi
+	@echo ""
+	@echo "=== GPU setup complete ==="
+	@echo "GPU libraries installed to: $(TOMOE_LIB)"
+	@echo "Ensure gpu_enabled = true in ~/.config/tomoe/config.toml"
+	@ls -lh $(TOMOE_LIB)/*.so
 
 clean: ## Remove build artifacts
 	rm -f $(BINARY) $(GUI_BINARY)

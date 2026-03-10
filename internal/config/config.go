@@ -125,6 +125,12 @@ func DataDir() string {
 	return filepath.Join(dir, "tomoe")
 }
 
+// LibDir returns the directory for additional shared libraries (~/.local/share/tomoe/lib/).
+// Used for GPU provider .so files downloaded by `make install-gpu`.
+func LibDir() string {
+	return filepath.Join(DataDir(), "lib")
+}
+
 // Exists reports whether the config file exists at the default path.
 func Exists() bool {
 	_, err := os.Stat(Path())
