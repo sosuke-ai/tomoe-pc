@@ -8,6 +8,7 @@ import (
 
 	"github.com/sosuke-ai/tomoe-pc/internal/config"
 	"github.com/sosuke-ai/tomoe-pc/internal/gpu"
+	"github.com/sosuke-ai/tomoe-pc/internal/models"
 )
 
 func main() {
@@ -28,6 +29,7 @@ func init() {
 	rootCmd.AddCommand(initCmd)
 	rootCmd.AddCommand(statusCmd)
 	rootCmd.AddCommand(configCmd)
+	rootCmd.AddCommand(modelCmd)
 }
 
 // startCmd is an alias for the root command.
@@ -84,8 +86,16 @@ func runInit(cmd *cobra.Command, args []string) error {
 	fmt.Printf("Config written to: %s\n", cfgPath)
 	fmt.Println()
 
-	// Model download placeholder
-	fmt.Println("Model download: not yet implemented")
+	// Download models
+	mgr := models.NewManager(cfg.Transcription.ModelPath)
+	if err := mgr.Download(false); err != nil {
+		return fmt.Errorf("downloading models: %w", err)
+	}
+	fmt.Println()
+
+	// Summary
+	modelStatus := mgr.Check()
+	fmt.Println(modelStatus)
 	fmt.Println()
 
 	fmt.Println("=== Init complete ===")
@@ -123,9 +133,50 @@ var statusCmd = &cobra.Command{
 		}
 		fmt.Println()
 
+		// Models
+		mgr := models.NewManager(config.ModelDir())
+		modelStatus := mgr.Check()
+		fmt.Println(modelStatus)
+		fmt.Println()
+
 		// Daemon
 		fmt.Println("Daemon: not running (daemon mode not yet implemented)")
 
+		return nil
+	},
+}
+
+var modelCmd = &cobra.Command{
+	Use:   "model",
+	Short: "Manage transcription models",
+}
+
+func init() {
+	modelCmd.AddCommand(modelDownloadCmd)
+	modelCmd.AddCommand(modelStatusCmd)
+}
+
+var modelDownloadCmd = &cobra.Command{
+	Use:   "download",
+	Short: "Download or re-download Parakeet TDT FP16 model and Silero VAD",
+	RunE: func(cmd *cobra.Command, args []string) error {
+		force, _ := cmd.Flags().GetBool("force")
+		mgr := models.NewManager(config.ModelDir())
+		return mgr.Download(force)
+	},
+}
+
+func init() {
+	modelDownloadCmd.Flags().Bool("force", false, "Force re-download even if models exist")
+}
+
+var modelStatusCmd = &cobra.Command{
+	Use:   "status",
+	Short: "Show downloaded model info and integrity check",
+	RunE: func(cmd *cobra.Command, args []string) error {
+		mgr := models.NewManager(config.ModelDir())
+		status := mgr.Check()
+		fmt.Println(status)
 		return nil
 	},
 }
