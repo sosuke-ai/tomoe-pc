@@ -15,9 +15,10 @@ type StreamCapturer struct {
 	windowCh chan []float32
 	stopCh   chan struct{}
 
-	mu      sync.Mutex
-	started bool
-	closed  bool
+	mu       sync.Mutex
+	started  bool
+	closed   bool
+	stopOnce sync.Once
 
 	windowSize int
 	// allSamples accumulates all captured audio for later retrieval.
@@ -83,7 +84,7 @@ func (s *StreamCapturer) Stop() error {
 	s.started = false
 	s.mu.Unlock()
 
-	close(s.stopCh)
+	s.stopOnce.Do(func() { close(s.stopCh) })
 	if err := s.capturer.Stop(); err != nil {
 		return fmt.Errorf("stopping capturer: %w", err)
 	}

@@ -3,6 +3,7 @@ import { Segment } from '../types';
 
 interface Props {
   segments: Segment[];
+  isRecording?: boolean;
 }
 
 function formatTime(seconds: number): string {
@@ -20,7 +21,7 @@ function speakerClass(speaker: string): string {
   return 'other';
 }
 
-export default function TranscriptPane({ segments }: Props) {
+export default function TranscriptPane({ segments, isRecording }: Props) {
   const endRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
@@ -31,7 +32,9 @@ export default function TranscriptPane({ segments }: Props) {
     return (
       <div className="transcript-pane">
         <div className="empty-state">
-          Select audio sources and click Start to begin transcription
+          {isRecording
+            ? 'Listening for speech...'
+            : 'Select audio sources and click Start to begin transcription'}
         </div>
       </div>
     );

@@ -48,6 +48,9 @@ func (tm *trayManager) handleEvents() {
 	for {
 		select {
 		case <-tm.mStartStop.ClickedCh:
+			if tm.app.ctx == nil {
+				continue // Wails not ready yet
+			}
 			tm.app.mu.Lock()
 			recording := tm.app.recording
 			tm.app.mu.Unlock()
@@ -57,7 +60,6 @@ func (tm *trayManager) handleEvents() {
 				tm.mStartStop.SetTitle("Start Recording")
 				systray.SetIcon(trayIcon)
 			} else {
-				// Use default devices
 				micDevice := tm.app.cfg.Audio.Device
 				monitorDevice := tm.app.cfg.Meeting.MonitorDevice
 				_ = tm.app.StartSession(micDevice, monitorDevice)

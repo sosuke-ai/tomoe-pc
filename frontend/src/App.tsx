@@ -23,9 +23,22 @@ function App() {
   const { isRecording, startTime, reset: resetSession } = useSession();
 
   useEffect(() => {
-    // Load devices on mount
     loadDevices();
-  }, []);
+
+    // Handle in-window keyboard shortcut for meeting toggle (Super+Shift+M)
+    function handleKeyDown(e: KeyboardEvent) {
+      if (e.metaKey && e.shiftKey && e.key === 'M') {
+        e.preventDefault();
+        if (isRecording) {
+          handleStop();
+        } else {
+          handleStart();
+        }
+      }
+    }
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, [isRecording, micDevice, monitorDevice]);
 
   async function loadDevices() {
     try {
@@ -96,7 +109,7 @@ function App() {
       </div>
 
       {view === 'live' && (
-        <TranscriptPane segments={segments} />
+        <TranscriptPane segments={segments} isRecording={isRecording} />
       )}
 
       {view === 'sessions' && (

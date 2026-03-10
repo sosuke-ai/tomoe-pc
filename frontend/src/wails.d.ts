@@ -1,5 +1,13 @@
 /* eslint-disable @typescript-eslint/no-explicit-any */
 interface Window {
+  runtime: {
+    EventsOn(eventName: string, callback: (...data: any[]) => void): () => void;
+    EventsEmit(eventName: string, ...data: any[]): void;
+    EventsOff(eventName: string, ...additionalEventNames: string[]): void;
+    WindowShow(): void;
+    WindowHide(): void;
+    Quit(): void;
+  };
   go: {
     backend: {
       App: {

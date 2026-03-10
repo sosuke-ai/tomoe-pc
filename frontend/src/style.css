@@ -65,6 +65,12 @@ body {
   background-repeat: no-repeat;
   background-position: right 10px center;
   padding-right: 28px;
+  max-width: 240px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  flex-shrink: 1;
+  min-width: 100px;
 }
 
 .toolbar select:focus {
@@ -240,6 +246,11 @@ body {
 
 .session-item:hover {
   background: var(--surface-hover);
+}
+
+.session-item.selected {
+  background: var(--surface-hover);
+  border: 1px solid var(--primary);
 }
 
 .session-item .session-title {

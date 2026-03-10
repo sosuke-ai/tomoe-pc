@@ -25,29 +25,31 @@ export interface DeviceInfo {
   DeviceType: number; // 0=Input, 1=Monitor
 }
 
+// Wails serializes Go structs as JSON using Go field names (PascalCase)
+// since Config uses `toml` tags, not `json` tags.
 export interface Config {
-  hotkey: {
-    binding: string;
-    meeting_binding: string;
+  Hotkey: {
+    Binding: string;
+    MeetingBinding: string;
   };
-  audio: {
-    device: string;
+  Audio: {
+    Device: string;
   };
-  transcription: {
-    gpu_enabled: boolean;
-    model_path: string;
+  Transcription: {
+    GPUEnabled: boolean;
+    ModelPath: string;
   };
-  output: {
-    auto_paste: boolean;
-    clipboard: boolean;
+  Output: {
+    AutoPaste: boolean;
+    Clipboard: boolean;
   };
-  meeting: {
-    default_sources: string;
-    monitor_device: string;
-    speaker_threshold: number;
-    max_speech_duration: number;
-    min_silence_duration: number;
-    auto_save: boolean;
+  Meeting: {
+    DefaultSources: string;
+    MonitorDevice: string;
+    SpeakerThreshold: number;
+    MaxSpeechDuration: number;
+    MinSilenceDuration: number;
+    AutoSave: boolean;
   };
 }
 
@@ -55,8 +57,8 @@ export interface GPUInfo {
   Available: boolean;
   Sufficient: boolean;
   Name: string;
-  VRAM: number;
-  DriverVersion: string;
+  VRAMMB: number;
+  CUDAVersion: string;
 }
 
 export interface ModelStatus {

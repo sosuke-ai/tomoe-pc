@@ -53,8 +53,15 @@ func listDevices() ([]DeviceInfo, error) {
 	return devices, nil
 }
 
-func newCapturer(device string) (Capturer, error) {
-	ctx, err := malgo.InitContext(nil, malgo.ContextConfig{}, nil)
+func newCapturer(device string, deviceType DeviceType) (Capturer, error) {
+	// For monitor sources, force PulseAudio backend — monitor sources are a
+	// PulseAudio concept and only appear under the PulseAudio backend.
+	// On PipeWire systems this works via the PulseAudio compatibility layer.
+	var backends []malgo.Backend
+	if deviceType == Monitor {
+		backends = []malgo.Backend{malgo.BackendPulseaudio}
+	}
+	ctx, err := malgo.InitContext(backends, malgo.ContextConfig{}, nil)
 	if err != nil {
 		return nil, fmt.Errorf("initializing audio context: %w", err)
 	}

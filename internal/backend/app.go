@@ -153,7 +153,7 @@ func (a *App) StartSession(micDevice, monitorDevice string) error {
 
 	// Set up mic capturer
 	if micDevice != "" {
-		capturer, err := audio.NewCapturer(micDevice)
+		capturer, err := audio.NewCapturer(micDevice, audio.Input)
 		if err != nil {
 			return fmt.Errorf("creating mic capturer: %w", err)
 		}
@@ -162,7 +162,7 @@ func (a *App) StartSession(micDevice, monitorDevice string) error {
 
 	// Set up monitor capturer
 	if monitorDevice != "" {
-		capturer, err := audio.NewCapturer(monitorDevice)
+		capturer, err := audio.NewCapturer(monitorDevice, audio.Monitor)
 		if err != nil {
 			if cfg.MicCapturer != nil {
 				cfg.MicCapturer.Close()

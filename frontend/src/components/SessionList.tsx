@@ -1,4 +1,5 @@
 import { useState, useEffect } from 'react';
+import { EventsOn } from '../../wailsjs/runtime/runtime';
 import { Session } from '../types';
 
 interface Props {
@@ -17,12 +18,20 @@ export default function SessionList({ onExport }: Props) {
 
   useEffect(() => {
     loadSessions();
+
+    // Refresh session list when a new session is saved
+    const cancel = EventsOn('session:saved', () => {
+      loadSessions();
+    });
+    return () => { cancel(); };
   }, []);
 
   async function loadSessions() {
     try {
-      const list = await window.go.backend.App.GetSessionList();
-      setSessions(list || []);
+      if (window.go?.backend?.App) {
+        const list = await window.go.backend.App.GetSessionList();
+        setSessions(list || []);
+      }
     } catch (e) {
       console.error('Failed to load sessions:', e);
     }
@@ -55,7 +64,7 @@ export default function SessionList({ onExport }: Props) {
           {sessions.map(sess => (
             <div
               key={sess.id}
-              className="session-item"
+              className={`session-item ${sess.id === selectedId ? 'selected' : ''}`}
               onClick={() => setSelectedId(sess.id === selectedId ? null : sess.id)}
             >
               <div>
@@ -88,15 +97,21 @@ export default function SessionList({ onExport }: Props) {
 
       {selected && (
         <div className="transcript-pane" style={{ maxHeight: 300, borderTop: '1px solid var(--border)' }}>
-          {selected.segments?.map(seg => (
-            <div key={seg.id} className="segment">
-              <span className="timestamp">
-                [{Math.floor(seg.start_time / 60)}:{(Math.floor(seg.start_time) % 60).toString().padStart(2, '0')}]
-              </span>
-              <span className="speaker">{seg.speaker}:</span>
-              <span className="text">{seg.text}</span>
+          {(!selected.segments || selected.segments.length === 0) ? (
+            <div className="empty-state" style={{ height: 100, fontSize: 14 }}>
+              No audio detected in this session
             </div>
-          ))}
+          ) : (
+            selected.segments.map(seg => (
+              <div key={seg.id} className="segment">
+                <span className="timestamp">
+                  [{Math.floor(seg.start_time / 60)}:{(Math.floor(seg.start_time) % 60).toString().padStart(2, '0')}]
+                </span>
+                <span className="speaker">{seg.speaker}:</span>
+                <span className="text">{seg.text}</span>
+              </div>
+            ))
+          )}
         </div>
       )}
     </div>

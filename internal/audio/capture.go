@@ -43,6 +43,7 @@ func ListDevices() ([]DeviceInfo, error) {
 
 // NewCapturer creates a Capturer for the specified device.
 // Pass "default" or empty string for the default device.
-func NewCapturer(device string) (Capturer, error) {
-	return newCapturer(device)
+// deviceType indicates whether this is a regular Input or a Monitor source.
+func NewCapturer(device string, deviceType DeviceType) (Capturer, error) {
+	return newCapturer(device, deviceType)
 }

@@ -29,7 +29,7 @@ func New(cfg *config.Config) (*Services, error) {
 
 	clip := clipboard.NewWriter()
 
-	capturer, err := audio.NewCapturer(cfg.Audio.Device)
+	capturer, err := audio.NewCapturer(cfg.Audio.Device, audio.Input)
 	if err != nil {
 		return nil, fmt.Errorf("creating audio capturer: %w", err)
 	}

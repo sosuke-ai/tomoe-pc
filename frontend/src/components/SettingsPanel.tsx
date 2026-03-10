@@ -5,6 +5,7 @@ export default function SettingsPanel() {
   const [config, setConfig] = useState<Config | null>(null);
   const [gpuInfo, setGpuInfo] = useState<GPUInfo | null>(null);
   const [modelStatus, setModelStatus] = useState<ModelStatus | null>(null);
+  const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
     loadInfo();
@@ -22,7 +23,19 @@ export default function SettingsPanel() {
       }
     } catch (e) {
       console.error('Failed to load settings:', e);
+      setError(String(e));
     }
+  }
+
+  if (error) {
+    return (
+      <div style={{ flex: 1, overflow: 'auto' }}>
+        <div className="panel-header"><h2>Settings</h2></div>
+        <div className="settings-panel">
+          <p style={{ color: '#e94560' }}>Failed to load settings: {error}</p>
+        </div>
+      </div>
+    );
   }
 
   return (
@@ -32,7 +45,7 @@ export default function SettingsPanel() {
       </div>
       <div className="settings-panel">
         <h3>GPU</h3>
-        {gpuInfo && (
+        {gpuInfo ? (
           <>
             <div className="setting-row">
               <label>Available</label>
@@ -46,23 +59,25 @@ export default function SettingsPanel() {
                 </div>
                 <div className="setting-row">
                   <label>VRAM</label>
-                  <span className="value">{gpuInfo.VRAM} MB</span>
+                  <span className="value">{gpuInfo.VRAMMB} MB</span>
                 </div>
                 <div className="setting-row">
-                  <label>Driver</label>
-                  <span className="value">{gpuInfo.DriverVersion}</span>
+                  <label>CUDA</label>
+                  <span className="value">{gpuInfo.CUDAVersion}</span>
                 </div>
               </>
             )}
             <div className="setting-row">
               <label>GPU Enabled</label>
-              <span className="value">{config?.transcription.gpu_enabled ? 'Yes' : 'No'}</span>
+              <span className="value">{config?.Transcription?.GPUEnabled ? 'Yes' : 'No'}</span>
             </div>
           </>
+        ) : (
+          <p style={{ color: 'var(--text-dim)', fontSize: 13 }}>Loading...</p>
         )}
 
         <h3 style={{ marginTop: 16 }}>Models</h3>
-        {modelStatus && (
+        {modelStatus ? (
           <>
             <div className="setting-row">
               <label>Parakeet TDT</label>
@@ -87,6 +102,8 @@ export default function SettingsPanel() {
               <span className="value" style={{ fontSize: 11 }}>{modelStatus.ModelDir}</span>
             </div>
           </>
+        ) : (
+          <p style={{ color: 'var(--text-dim)', fontSize: 13 }}>Loading...</p>
         )}
 
         <h3 style={{ marginTop: 16 }}>Hotkeys</h3>
@@ -94,11 +111,11 @@ export default function SettingsPanel() {
           <>
             <div className="setting-row">
               <label>Dictation</label>
-              <span className="value">{config.hotkey.binding}</span>
+              <span className="value">{config.Hotkey?.Binding}</span>
             </div>
             <div className="setting-row">
               <label>Meeting Toggle</label>
-              <span className="value">{config.hotkey.meeting_binding}</span>
+              <span className="value">{config.Hotkey?.MeetingBinding}</span>
             </div>
           </>
         )}
@@ -108,15 +125,15 @@ export default function SettingsPanel() {
           <>
             <div className="setting-row">
               <label>Default Sources</label>
-              <span className="value">{config.meeting.default_sources}</span>
+              <span className="value">{config.Meeting?.DefaultSources}</span>
             </div>
             <div className="setting-row">
               <label>Speaker Threshold</label>
-              <span className="value">{config.meeting.speaker_threshold}</span>
+              <span className="value">{config.Meeting?.SpeakerThreshold}</span>
             </div>
             <div className="setting-row">
               <label>Auto-Save</label>
-              <span className="value">{config.meeting.auto_save ? 'Yes' : 'No'}</span>
+              <span className="value">{config.Meeting?.AutoSave ? 'Yes' : 'No'}</span>
             </div>
           </>
         )}
