@@ -115,9 +115,7 @@ func (a *App) Shutdown(ctx context.Context) {
 
 // BeforeClose is called before the window closes. Returns true to prevent closing.
 func (a *App) BeforeClose(ctx context.Context) bool {
-	// Hide window instead of quitting when tray is active
-	wailsRuntime.WindowHide(ctx)
-	return true
+	return false // allow window close → app exit
 }
 
 // ListAudioDevices returns available audio input devices.
