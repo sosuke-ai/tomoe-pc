@@ -279,15 +279,14 @@ func (d *Daemon) startStreamingDictation(ctx context.Context, autoStopCh chan st
 				}
 				resetTimer()
 
-				// Write to clipboard immediately
 				if d.cfg.Output.Clipboard {
 					if err := d.svc.Clipboard.Write(seg.Text); err != nil {
 						fmt.Printf("Clipboard error: %v\n", err)
 					}
 				}
 				if d.cfg.Output.AutoPaste {
-					if err := d.svc.Clipboard.AutoPaste(); err != nil {
-						fmt.Printf("Auto-paste error: %v\n", err)
+					if err := d.svc.Clipboard.TypeText(seg.Text); err != nil {
+						fmt.Printf("Auto-type error: %v\n", err)
 					}
 				}
 				fmt.Printf("[dictation] %s\n", seg.Text)

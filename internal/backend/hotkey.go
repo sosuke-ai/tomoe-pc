@@ -199,13 +199,14 @@ func (dhk *dictationManager) streamSegments(coordinator *live.Coordinator, cance
 			}
 			resetTimer()
 
-			// Write to clipboard immediately
-			if err := dhk.clip.Write(seg.Text); err != nil {
-				fmt.Printf("Dictation clipboard error: %v\n", err)
+			if dhk.app.cfg.Output.Clipboard {
+				if err := dhk.clip.Write(seg.Text); err != nil {
+					fmt.Printf("Dictation clipboard error: %v\n", err)
+				}
 			}
 			if dhk.app.cfg.Output.AutoPaste {
-				if err := dhk.clip.AutoPaste(); err != nil {
-					fmt.Printf("Dictation auto-paste error: %v\n", err)
+				if err := dhk.clip.TypeText(seg.Text); err != nil {
+					fmt.Printf("Dictation auto-type error: %v\n", err)
 				}
 			}
 
