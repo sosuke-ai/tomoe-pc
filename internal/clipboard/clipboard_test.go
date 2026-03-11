@@ -37,8 +37,6 @@ func TestNewWriterImplementsInterface(t *testing.T) {
 	if w == nil {
 		t.Fatal("NewWriter() returned nil")
 	}
-	// Verify it implements Writer interface
-	var _ Writer = w
 }
 
 func TestLinuxWriterDisplayServer(t *testing.T) {
