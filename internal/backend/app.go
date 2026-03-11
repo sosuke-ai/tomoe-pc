@@ -12,6 +12,7 @@ import (
 	"github.com/sosuke-ai/tomoe-pc/internal/audio"
 	"github.com/sosuke-ai/tomoe-pc/internal/config"
 	"github.com/sosuke-ai/tomoe-pc/internal/gpu"
+	"github.com/sosuke-ai/tomoe-pc/internal/hotkey"
 	"github.com/sosuke-ai/tomoe-pc/internal/live"
 	"github.com/sosuke-ai/tomoe-pc/internal/models"
 	"github.com/sosuke-ai/tomoe-pc/internal/session"
@@ -205,6 +206,9 @@ func (a *App) StartSession(micDevice, monitorDevice string) error {
 		}
 		return fmt.Errorf("starting coordinator: %w", err)
 	}
+
+	// Re-grab hotkeys — audio device init can interfere with X11 key grabs
+	hotkey.ReGrabAll()
 
 	// Create session
 	var sources []string

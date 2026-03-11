@@ -156,6 +156,9 @@ func (dhk *dictationManager) startDictation() {
 		return
 	}
 
+	// Re-grab hotkeys — audio device init can interfere with X11 key grabs
+	hotkey.ReGrabAll()
+
 	dhk.app.mu.Lock()
 	dhk.app.dictating = true
 	dhk.app.dictCoordinator = coordinator

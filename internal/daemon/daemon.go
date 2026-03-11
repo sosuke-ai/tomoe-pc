@@ -245,6 +245,9 @@ func (d *Daemon) startStreamingDictation(ctx context.Context, autoStopCh chan st
 		return nil, fmt.Errorf("starting coordinator: %w", err)
 	}
 
+	// Re-grab hotkeys — audio device init can interfere with X11 key grabs
+	hotkey.ReGrabAll()
+
 	done := make(chan struct{})
 	silenceTimeout := d.silenceTimeout()
 
@@ -383,6 +386,9 @@ func (d *Daemon) startMeeting(ctx context.Context) (*meetingState, error) {
 		}
 		return nil, fmt.Errorf("starting coordinator: %w", err)
 	}
+
+	// Re-grab hotkeys — audio device init can interfere with X11 key grabs
+	hotkey.ReGrabAll()
 
 	// Create session
 	var sources []string
