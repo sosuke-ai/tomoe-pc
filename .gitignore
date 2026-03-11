@@ -9,6 +9,11 @@
 *.dylib
 /tomoe
 /tomoe-gui
+/hotkey-test
+/monitor-test
+
+# Debug audio dumps
+*.pcm
 
 # Frontend build artifacts
 frontend/node_modules/
