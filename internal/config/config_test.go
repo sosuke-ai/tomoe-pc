@@ -10,11 +10,11 @@ import (
 func TestDefaultConfig(t *testing.T) {
 	cfg := DefaultConfig()
 
-	if cfg.Hotkey.Binding != "Super+Shift+R" {
-		t.Errorf("Hotkey.Binding = %q, want %q", cfg.Hotkey.Binding, "Super+Shift+R")
+	if cfg.Hotkey.Binding != "Super+Shift+S" {
+		t.Errorf("Hotkey.Binding = %q, want %q", cfg.Hotkey.Binding, "Super+Shift+S")
 	}
-	if cfg.Hotkey.MeetingBinding != "Super+Shift+M" {
-		t.Errorf("Hotkey.MeetingBinding = %q, want %q", cfg.Hotkey.MeetingBinding, "Super+Shift+M")
+	if cfg.Hotkey.MeetingBinding != "Super+Shift+X" {
+		t.Errorf("Hotkey.MeetingBinding = %q, want %q", cfg.Hotkey.MeetingBinding, "Super+Shift+X")
 	}
 	if cfg.Audio.Device != "default" {
 		t.Errorf("Audio.Device = %q, want %q", cfg.Audio.Device, "default")

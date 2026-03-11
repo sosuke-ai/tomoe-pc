@@ -141,8 +141,8 @@ Sessions: `~/.local/share/tomoe/sessions/`
 
 ### Default Hotkeys
 
-- `Super+Shift+R` — toggle dictation
-- `Super+Shift+G` — toggle meeting recording
+- `Super+Shift+S` — toggle dictation
+- `Super+Shift+X` — toggle meeting recording
 
 ## CLI Commands
 

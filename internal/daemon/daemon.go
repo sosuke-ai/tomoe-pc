@@ -101,7 +101,7 @@ func (d *Daemon) Run(ctx context.Context) error {
 	if meetingCh != nil {
 		meetingBinding := d.cfg.Hotkey.MeetingBinding
 		if meetingBinding == "" {
-			meetingBinding = "Super+Shift+M"
+			meetingBinding = "Super+Shift+X"
 		}
 		bindings += ", " + meetingBinding + " for meeting"
 	}

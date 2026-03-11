@@ -28,10 +28,10 @@ type dictationManager struct {
 
 // registerHotkeys registers both the meeting and dictation hotkeys.
 func (a *App) registerHotkeys() error {
-	// Register meeting hotkey (Super+Shift+M)
+	// Register meeting hotkey
 	meetingBinding := a.cfg.Hotkey.MeetingBinding
 	if meetingBinding == "" {
-		meetingBinding = "Super+Shift+M"
+		meetingBinding = "Super+Shift+X"
 	}
 
 	meetingListener, err := hotkey.NewListener(meetingBinding)
@@ -49,10 +49,10 @@ func (a *App) registerHotkeys() error {
 	}
 	go mhk.listen()
 
-	// Register dictation hotkey (Super+Shift+R)
+	// Register dictation hotkey
 	dictBinding := a.cfg.Hotkey.Binding
 	if dictBinding == "" {
-		dictBinding = "Super+Shift+R"
+		dictBinding = "Super+Shift+S"
 	}
 
 	dictListener, err := hotkey.NewListener(dictBinding)

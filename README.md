@@ -75,8 +75,8 @@ tomoe config              # Print current config
 
 | Hotkey | Action |
 |--------|--------|
-| `Super+Shift+R` | Toggle dictation (CLI + GUI) |
-| `Super+Shift+G` | Toggle meeting recording (CLI + GUI) |
+| `Super+Shift+S` | Toggle dictation (CLI + GUI) |
+| `Super+Shift+X` | Toggle meeting recording (CLI + GUI) |
 
 Configurable in `~/.config/tomoe/config.toml`.
 
@@ -86,8 +86,8 @@ Configurable in `~/.config/tomoe/config.toml`.
 # ~/.config/tomoe/config.toml
 
 [hotkey]
-binding = 'Super+Shift+R'
-meeting_binding = 'Super+Shift+G'
+binding = 'Super+Shift+S'
+meeting_binding = 'Super+Shift+X'
 
 [audio]
 device = 'default'

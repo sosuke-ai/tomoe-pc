@@ -111,7 +111,7 @@ func runStart(cmd *cobra.Command, args []string) error {
 	// Create meeting hotkey
 	meetingBinding := cfg.Hotkey.MeetingBinding
 	if meetingBinding == "" {
-		meetingBinding = "Super+Shift+M"
+		meetingBinding = "Super+Shift+X"
 	}
 	if mhk, err := hotkey.NewListener(meetingBinding); err == nil {
 		opts.MeetingHotkey = mhk

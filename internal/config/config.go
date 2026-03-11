@@ -56,8 +56,8 @@ type MeetingConfig struct {
 func DefaultConfig() *Config {
 	return &Config{
 		Hotkey: HotkeyConfig{
-			Binding:        "Super+Shift+R",
-			MeetingBinding: "Super+Shift+M",
+			Binding:        "Super+Shift+S",
+			MeetingBinding: "Super+Shift+X",
 		},
 		Audio: AudioConfig{
 			Device: "default",
