@@ -2,76 +2,123 @@
 
 ## Project Overview
 
-Local-first speech-to-text desktop application for Linux. Captures microphone audio and system audio, transcribes locally using NVIDIA Parakeet TDT 0.6B v3 (INT8, 25 European languages) via sherpa-onnx, and delivers text to clipboard or a live GUI transcript. Written in Go with cgo dependencies.
+Local-first speech-to-text desktop application for Linux. Two modes of operation:
+
+1. **CLI dictation** (`tomoe`) — global hotkey triggers mic capture, transcribes speech, pastes result into the focused window (terminal-aware: Ctrl+Shift+V for terminals, Ctrl+V otherwise)
+2. **Meeting transcription GUI** (`tomoe-gui`) — Wails v2 desktop app with live scrolling transcript, mic + system audio capture, speaker identification, session management, export
 
 - **License:** GPLv3
 - **Language:** Go 1.22+
 - **Target OS:** Ubuntu Linux 24.04+ (X11 primary, Wayland best-effort)
-- **Audio:** PipeWire (with PulseAudio compat layer)
-- **GPU:** NVIDIA CUDA (recommended), CPU fallback automatic
-- **GUI Framework:** Wails v2 (Phase 2)
+- **Audio:** PipeWire (with PulseAudio compat layer) via malgo/miniaudio
+- **GPU:** NVIDIA CUDA via ONNX Runtime, automatic CPU fallback
+- **GUI:** Wails v2 + React + TypeScript + Vite
+
+## Architecture
+
+### Inference Stack
+
+```
+Go binary → cgo → sherpa-onnx C API → ONNX Runtime (CUDA EP / CPU EP)
+  → Parakeet TDT 0.6B v3 INT8 (encoder + decoder + joiner, 25 languages)
+  → Silero VAD (~2MB)
+  → 3D-Speaker embedding model (~25MB)
+```
+
+### Data Flow (Meeting Mode)
+
+```
+Mic Capturer → StreamCapturer → VAD → Transcribe → Segment{speaker:"You"}
+                                                            │
+Monitor Capturer → StreamCapturer → VAD → Embed → Cluster → Segment{speaker:"Person N"}
+                                            │                       │
+                                      Transcribe          Wails EventsEmit
+                                                                    │
+                                                             React Frontend
+```
+
+### Data Flow (CLI Dictation)
+
+```
+Mic Capturer → StreamCapturer → VAD → Transcribe → Segment
+                                                       │
+                                              Clipboard.Write(text)
+                                                       │
+                                              Clipboard.AutoPaste()
+                                              (detects terminal vs GUI app)
+```
+
+### Key Design Decisions
+
+- **X11 hotkey grabs**: Direct `XGrabKey` via cgo (not golang-design/hotkey). Grabs all combinations of NumLock/CapsLock/ScrollLock masks. Single dispatch loop per process, shared across all listeners.
+- **Hotkey re-grab**: Audio device operations (malgo/PulseAudio) can interfere with X11 key grabs. `hotkey.ReGrabAll()` is called after every coordinator stop to restore grabs.
+- **Terminal-aware paste**: `isTerminalFocused()` queries `WM_CLASS` via `xprop -id $(xdotool getactivewindow)` to detect terminal emulators and send the correct paste keystroke.
+- **Signal handler fix**: ONNX Runtime / WebKit install SIGSEGV handlers without `SA_ONSTACK`, crashing Go goroutines on alternate signal stacks. `sigfix.AfterSherpa()` patches this on every frontend-bound method call.
+- **Async session save**: `StopSession()` releases the mutex immediately, emits `session:stopped`, then runs MP3 encoding + session save in a background goroutine.
+- **VAD activity channel**: Coordinator exposes an `Activity()` channel signaled when `vad.IsSpeech()` returns true, used to reset the silence timer during continuous speech (not just on completed segments).
 
 ## Project Structure
 
 ```
 tomoe-pc/
 ├── cmd/
-│   ├── tomoe/                     # CLI entry point (Phase 1)
-│   └── tomoe-gui/                 # Wails GUI entry point (Phase 2)
+│   ├── tomoe/              # CLI entry point
+│   └── tomoe-gui/          # Wails GUI entry point
 ├── internal/
-│   ├── audio/                     # Audio capture, streaming, monitor sources
-│   ├── backend/                   # Wails Go backend (app, events, tray, hotkey)
-│   ├── clipboard/                 # Clipboard write (atotto/clipboard)
-│   ├── config/                    # TOML config (Phase 1 + Phase 2 meeting config)
-│   ├── daemon/                    # CLI daemon orchestration
-│   ├── gpu/                       # GPU detection, ONNX Runtime EP selection
-│   ├── hotkey/                    # Global hotkey (golang-design/hotkey)
-│   ├── live/                      # Live transcription coordinator (Phase 2)
-│   ├── models/                    # Model download and management
-│   ├── notify/                    # Desktop notifications
-│   ├── platform/                  # Services aggregation layer
-│   ├── session/                   # Session data model, storage, export, audio
-│   ├── speaker/                   # Speaker embedding + clustering (Phase 2)
-│   └── transcribe/                # sherpa-onnx / Parakeet TDT integration
-├── frontend/                      # React + TypeScript + Vite frontend
-│   ├── src/
-│   │   ├── components/            # React components
-│   │   ├── hooks/                 # Custom React hooks
-│   │   ├── types.ts               # TypeScript type definitions
-│   │   ├── App.tsx                # Root component
-│   │   └── main.tsx               # Entry point
-│   └── wailsjs/                   # Wails runtime bindings
-├── docs/                          # Tech specs and documentation
-├── wails.json                     # Wails project configuration
+│   ├── audio/              # Audio capture, streaming, monitor sources
+│   ├── backend/            # Wails Go backend (app, events, tray, hotkey)
+│   ├── clipboard/          # Clipboard write + terminal-aware auto-paste
+│   ├── config/             # TOML config
+│   ├── daemon/             # CLI daemon orchestration
+│   ├── gpu/                # GPU detection, ONNX Runtime EP selection
+│   ├── hotkey/             # Global hotkey (X11 key grabs with lock-mask handling)
+│   ├── live/               # Live transcription coordinator + per-source pipelines
+│   ├── models/             # Model download and management
+│   ├── notify/             # Desktop notifications (notify-send)
+│   ├── platform/           # Services aggregation layer
+│   ├── session/            # Session storage, export (MD/TXT/SRT), audio (MP3)
+│   ├── sigfix/             # ONNX Runtime / WebKit signal handler fix
+│   ├── speaker/            # Speaker embedding extraction + cosine clustering
+│   └── transcribe/         # sherpa-onnx / Parakeet TDT integration
+├── frontend/               # React + TypeScript + Vite
+│   └── src/
+│       ├── components/     # TranscriptPane, SessionList, SourceSelector, etc.
+│       ├── hooks/          # useTranscript, useSession
+│       └── types.ts        # TypeScript types mirroring Go structs
+├── docs/                   # Tech specs (speech-to-text-tech-brief.md)
+├── wails.json
 ├── go.mod
-├── go.sum
 └── Makefile
 ```
 
-## Tech Spec
-
-The authoritative tech spec is at `docs/speech-to-text-tech-brief.md`. Always validate implementation plans and completed work against it.
-
-## Build & Run
+## Build & Development
 
 ```bash
+make dev-deps         # Install Ubuntu system packages
+make dev-tools        # Install Go tools (golangci-lint, goimports, wails)
 make build            # Build CLI + GUI (if webkit2gtk available)
 make build-gui        # Build GUI binary only
-make build-cuda       # Build with CUDA support
-make test             # Run tests
+make test             # Run unit tests (stages frontend first)
+make vet              # Run go vet (stages frontend first)
+make lint             # Run golangci-lint (stages frontend first)
 make dev-gui          # Wails dev mode with hot-reload
-make download-model   # Download Parakeet TDT v3 INT8 + Silero VAD + Speaker Embedding
-make install          # Install to GOPATH/bin
+make download-model   # Download models (~375MB total)
+make install          # Install to $GOPATH/bin
+make install-gpu      # Install CUDA toolkit + sherpa-onnx GPU libraries
 ```
 
 ### Build Requirements
 
-- Go 1.22+
-- C/C++ toolchain (gcc/g++ for cgo)
-- ONNX Runtime shared library (≥1.17.0)
-- sherpa-onnx C API headers and library
+- Go 1.22+, C/C++ toolchain (gcc/g++ for cgo)
+- ONNX Runtime (>=1.17.0) + sherpa-onnx C API
 - Node.js 18+ (for frontend)
-- `libwebkit2gtk-4.1-dev` (for GUI)
+- `libwebkit2gtk-4.1-dev`, `libappindicator3-dev`, `libgtk-3-dev` (for GUI)
+- `libx11-dev`, `libpulse-dev`, `libasound-dev` (for audio/hotkey)
+- `xdotool`, `xprop` (for auto-paste on X11)
+
+### Important Build Note
+
+`make vet`, `make lint`, and `make test` all depend on `stage-frontend`, which builds the React frontend and copies `dist/` into `cmd/tomoe-gui/frontend/` for `go:embed`. This is required because `cmd/tomoe-gui/main.go` embeds the frontend assets.
 
 ## Key Dependencies
 
@@ -79,7 +126,6 @@ make install          # Install to GOPATH/bin
 |---|---|---|
 | `k2-fsa/sherpa-onnx` | Transcription engine (ONNX Runtime + Parakeet TDT) | Yes |
 | `gen2brain/malgo` | Audio capture (miniaudio bindings) | Yes |
-| `golang-design/hotkey` | Global hotkey registration | Yes (X11) |
 | `wailsapp/wails/v2` | Desktop GUI framework | Yes |
 | `fyne.io/systray` | System tray (AppIndicator3 on Linux) | Yes |
 | `atotto/clipboard` | Clipboard write | No |
@@ -87,34 +133,16 @@ make install          # Install to GOPATH/bin
 | `google/uuid` | Session IDs | No |
 | `schollz/progressbar` | CLI progress bars | No |
 
-## Inference Stack
+## Configuration
 
-```
-Go binary → cgo → sherpa-onnx C API → ONNX Runtime (CUDA EP / CPU EP)
-  → Parakeet TDT 0.6B v3 INT8 (encoder + decoder + joiner, 25 languages)
-  → Silero VAD (~2MB)
-  → 3D-Speaker embedding model (~25MB) [Phase 2]
-```
+Config: `~/.config/tomoe/config.toml`
+Models: `~/.local/share/tomoe/models/`
+Sessions: `~/.local/share/tomoe/sessions/`
 
-## Configuration Paths
+### Default Hotkeys
 
-- Config: `~/.config/tomoe/config.toml`
-- Models: `~/.local/share/tomoe/models/`
-- Sessions: `~/.local/share/tomoe/sessions/`
-
-## Development Phases
-
-- **Phase 1:** CLI dictation mode — hotkey toggle, mic capture, local transcription, clipboard output, auto-init
-- **Phase 2 (current):** Meeting transcription GUI via Wails v2 — system audio loopback, live transcript, speaker ID, session management, export
-
-## Coding Conventions
-
-- Use `internal/` for all non-main packages — nothing is exported outside the module
-- Platform-specific code uses `_linux.go` build tag suffix
-- Audio format: 16kHz mono PCM float32 (Parakeet TDT native input)
-- 25 European languages with automatic language detection
-- Model quantization: INT8 (v3)
-- Config format: TOML via `pelletier/go-toml`
+- `Super+Shift+R` — toggle dictation
+- `Super+Shift+G` — toggle meeting recording
 
 ## CLI Commands
 
@@ -131,10 +159,15 @@ tomoe devices             # List audio input devices
 tomoe config              # Print current config
 ```
 
-## Non-Functional Targets
+## Coding Conventions
 
-- Transcription latency (30s clip): <1s GPU, <5s CPU
-- Idle daemon memory: <50MB RSS
-- Binary size: <30MB (excluding model + ONNX Runtime .so)
-- Model download: ~350MB (INT8 archive) + ~2MB (Silero VAD) + ~25MB (Speaker Embedding)
-- VRAM during inference: ~1–1.5GB (INT8)
+- Use `internal/` for all non-main packages — nothing is exported outside the module
+- Platform-specific code uses `_linux.go` build tag suffix
+- Audio format: 16kHz mono PCM float32 (Parakeet TDT native input)
+- Config format: TOML via `pelletier/go-toml`
+- GUI build requires `-tags production,webkit2_41`
+- Verbose logging in CLI daemon (hotkey dispatch, audio events) is intentional
+
+## Tech Spec
+
+The authoritative tech spec is at `docs/speech-to-text-tech-brief.md`.
