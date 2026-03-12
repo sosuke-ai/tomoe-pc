@@ -39,11 +39,20 @@ type App struct {
 	dictCoordinator *live.Coordinator
 	dictCancel      context.CancelFunc
 	currentSess     *session.Session
+
+	// trayDictCh is signalled by the tray "Start/Stop Dictation" menu item.
+	trayDictCh chan struct{}
+	// trayMeetCh is signalled by the tray "Start/Stop Meeting" menu item.
+	trayMeetCh chan struct{}
+	tray       *trayManager
 }
 
 // NewApp creates a new App instance.
 func NewApp() *App {
-	return &App{}
+	return &App{
+		trayDictCh: make(chan struct{}, 1),
+		trayMeetCh: make(chan struct{}, 1),
+	}
 }
 
 // Startup is called by Wails when the application starts.
@@ -272,6 +281,27 @@ func (a *App) StopSession() (*session.Session, error) {
 			audioPath := config.SessionDir() + "/" + sess.ID + "/audio.mp3"
 			if err := session.SaveAudioMP3(samples, 16000, audioPath); err == nil {
 				sess.AudioPath = audioPath
+			}
+		}
+
+		// Post-processing: run neural diarization to refine speaker labels
+		if a.modelMgr != nil {
+			status := a.modelMgr.Check()
+			if status.DiarizationReady() {
+				gpuInfo := gpu.Detect()
+				useGPU := gpuInfo.Available && gpuInfo.Sufficient
+				count, err := session.ReidentifyByDiarization(sess, session.DiarizeConfig{
+					SegmentationModelPath: status.SpeakerSegmentationPath,
+					EmbeddingModelPath:    status.SpeakerEmbeddingPath,
+					Threshold:             1.1,
+					MergeThreshold:        0.55,
+					UseGPU:                useGPU,
+				})
+				if err != nil {
+					fmt.Printf("Warning: post-recording diarization failed: %v\n", err)
+				} else if count > 0 {
+					fmt.Printf("Post-processing: refined speaker labels for %d segments\n", count)
+				}
 			}
 		}
 

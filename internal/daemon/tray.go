@@ -10,15 +10,22 @@ import (
 
 // daemonTray manages the system tray icon for the CLI daemon.
 type daemonTray struct {
-	quitCh chan struct{}
-	ready  atomic.Bool
+	quitCh      chan struct{}
+	dictationCh chan struct{}
+	meetingCh   chan struct{}
+	ready       atomic.Bool
+
+	mDictation *systray.MenuItem
+	mMeeting   *systray.MenuItem
 }
 
 // startDaemonTray starts the system tray in a goroutine.
 // Returns immediately; the tray initializes asynchronously.
 func startDaemonTray() *daemonTray {
 	t := &daemonTray{
-		quitCh: make(chan struct{}, 1),
+		quitCh:      make(chan struct{}, 1),
+		dictationCh: make(chan struct{}, 1),
+		meetingCh:   make(chan struct{}, 1),
 	}
 	go func() {
 		defer func() {
@@ -31,14 +38,32 @@ func startDaemonTray() *daemonTray {
 			systray.SetTooltip("Tomoe — Ready")
 			systray.SetIcon(daemonTrayIcon)
 
+			t.mDictation = systray.AddMenuItem("Start Dictation", "Start/Stop dictation")
+			t.mMeeting = systray.AddMenuItem("Start Meeting", "Start/Stop meeting recording")
+			systray.AddSeparator()
 			mQuit := systray.AddMenuItem("Quit", "Stop Tomoe daemon")
 			t.ready.Store(true)
 
 			go func() {
-				<-mQuit.ClickedCh
-				select {
-				case t.quitCh <- struct{}{}:
-				default:
+				for {
+					select {
+					case <-t.mDictation.ClickedCh:
+						select {
+						case t.dictationCh <- struct{}{}:
+						default:
+						}
+					case <-t.mMeeting.ClickedCh:
+						select {
+						case t.meetingCh <- struct{}{}:
+						default:
+						}
+					case <-mQuit.ClickedCh:
+						select {
+						case t.quitCh <- struct{}{}:
+						default:
+						}
+						return
+					}
 				}
 			}()
 		}, func() {})
@@ -52,6 +77,14 @@ func (t *daemonTray) SetIdle() {
 	}
 	systray.SetTooltip("Tomoe — Ready")
 	systray.SetIcon(daemonTrayIcon)
+	if t.mDictation != nil {
+		t.mDictation.SetTitle("Start Dictation")
+		t.mDictation.Show()
+	}
+	if t.mMeeting != nil {
+		t.mMeeting.SetTitle("Start Meeting")
+		t.mMeeting.Show()
+	}
 }
 
 func (t *daemonTray) SetDictating() {
@@ -60,6 +93,12 @@ func (t *daemonTray) SetDictating() {
 	}
 	systray.SetTooltip("Tomoe — Dictating...")
 	systray.SetIcon(daemonTrayIconRecording)
+	if t.mDictation != nil {
+		t.mDictation.SetTitle("Stop Dictation")
+	}
+	if t.mMeeting != nil {
+		t.mMeeting.Hide()
+	}
 }
 
 func (t *daemonTray) SetMeetingRecording() {
@@ -68,6 +107,12 @@ func (t *daemonTray) SetMeetingRecording() {
 	}
 	systray.SetTooltip("Tomoe — Meeting Recording...")
 	systray.SetIcon(daemonTrayIconRecording)
+	if t.mMeeting != nil {
+		t.mMeeting.SetTitle("Stop Meeting")
+	}
+	if t.mDictation != nil {
+		t.mDictation.Hide()
+	}
 }
 
 func (t *daemonTray) Close() {

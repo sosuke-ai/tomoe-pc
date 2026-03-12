@@ -76,49 +76,78 @@ func (a *App) registerHotkeys() error {
 	return nil
 }
 
-// listen handles hotkey events for the meeting toggle.
+// listen handles hotkey and tray events for the meeting toggle.
 func (hk *hotkeyManager) listen() {
-	for range hk.listener.Keydown() {
-		hk.app.mu.Lock()
-		recording := hk.app.recording
-		dictating := hk.app.dictating
-		hk.app.mu.Unlock()
-
-		// Ignore if dictation is in progress
-		if dictating {
-			continue
+	for {
+		select {
+		case _, ok := <-hk.listener.Keydown():
+			if !ok {
+				return
+			}
+			hk.toggleMeeting()
+		case <-hk.app.trayMeetCh:
+			hk.toggleMeeting()
 		}
-
-		if recording {
-			_, _ = hk.app.StopSession()
-		} else {
-			micDevice := hk.app.cfg.Audio.Device
-			monitorDevice := hk.app.cfg.Meeting.MonitorDevice
-			_ = hk.app.StartSession(micDevice, monitorDevice)
-		}
-
-		wailsRuntime.EventsEmit(hk.app.ctx, "hotkey:toggled", !recording)
 	}
 }
 
-// listen handles hotkey events for dictation (streaming record → transcribe → clipboard).
+func (hk *hotkeyManager) toggleMeeting() {
+	hk.app.mu.Lock()
+	recording := hk.app.recording
+	dictating := hk.app.dictating
+	hk.app.mu.Unlock()
+
+	// Ignore if dictation is in progress
+	if dictating {
+		return
+	}
+
+	if recording {
+		_, _ = hk.app.StopSession()
+		if hk.app.tray != nil {
+			hk.app.tray.setIdle()
+		}
+	} else {
+		micDevice := hk.app.cfg.Audio.Device
+		monitorDevice := hk.app.cfg.Meeting.MonitorDevice
+		_ = hk.app.StartSession(micDevice, monitorDevice)
+		if hk.app.tray != nil {
+			hk.app.tray.setMeetingRecording()
+		}
+	}
+
+	wailsRuntime.EventsEmit(hk.app.ctx, "hotkey:toggled", !recording)
+}
+
+// listen handles hotkey and tray events for dictation toggle.
 func (dhk *dictationManager) listen() {
-	for range dhk.listener.Keydown() {
-		dhk.app.mu.Lock()
-		recording := dhk.app.recording
-		dictating := dhk.app.dictating
-		dhk.app.mu.Unlock()
-
-		// Ignore if meeting recording is in progress
-		if recording {
-			continue
+	for {
+		select {
+		case _, ok := <-dhk.listener.Keydown():
+			if !ok {
+				return
+			}
+			dhk.toggleDictation()
+		case <-dhk.app.trayDictCh:
+			dhk.toggleDictation()
 		}
+	}
+}
 
-		if !dictating {
-			dhk.startDictation()
-		} else {
-			dhk.stopDictation()
-		}
+func (dhk *dictationManager) toggleDictation() {
+	dhk.app.mu.Lock()
+	recording := dhk.app.recording
+	dictating := dhk.app.dictating
+	dhk.app.mu.Unlock()
+
+	if recording {
+		return // ignore dictation while meeting active
+	}
+
+	if !dictating {
+		dhk.startDictation()
+	} else {
+		dhk.stopDictation()
 	}
 }
 
@@ -165,6 +194,9 @@ func (dhk *dictationManager) startDictation() {
 	dhk.app.dictCancel = cancel
 	dhk.app.mu.Unlock()
 
+	if dhk.app.tray != nil {
+		dhk.app.tray.setDictating()
+	}
 	wailsRuntime.EventsEmit(dhk.app.ctx, "dictation:started", nil)
 
 	// Stream segments: transcribe → clipboard in real-time, auto-stop on silence
@@ -257,6 +289,9 @@ func (dhk *dictationManager) stopDictation() {
 		cancel()
 	}
 
+	if dhk.app.tray != nil {
+		dhk.app.tray.setIdle()
+	}
 	wailsRuntime.EventsEmit(dhk.app.ctx, "dictation:stopped", nil)
 	fmt.Println("Dictation stopped.")
 }

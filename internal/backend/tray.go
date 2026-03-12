@@ -7,10 +7,10 @@ import (
 
 // trayManager handles the system tray icon and menu.
 type trayManager struct {
-	app         *App
-	mStartStop  *systray.MenuItem
-	mShowWindow *systray.MenuItem
-	mQuit       *systray.MenuItem
+	app        *App
+	mDictation *systray.MenuItem
+	mMeeting   *systray.MenuItem
+	mQuit      *systray.MenuItem
 }
 
 // StartTray initializes and runs the system tray.
@@ -30,14 +30,14 @@ func StartTrayAsync(app *App) {
 
 func onTrayReady(app *App) {
 	systray.SetTitle("Tomoe")
-	systray.SetTooltip("Tomoe — Speech-to-Text")
+	systray.SetTooltip("Tomoe — Ready")
 	systray.SetIcon(trayIcon)
 
 	tm := &trayManager{app: app}
+	app.tray = tm
 
-	tm.mStartStop = systray.AddMenuItem("Start Meeting", "Start/Stop meeting recording")
-	systray.AddSeparator()
-	tm.mShowWindow = systray.AddMenuItem("Show Window", "Show the main window")
+	tm.mDictation = systray.AddMenuItem("Start Dictation", "Start/Stop dictation")
+	tm.mMeeting = systray.AddMenuItem("Start Meeting", "Start/Stop meeting recording")
 	systray.AddSeparator()
 	tm.mQuit = systray.AddMenuItem("Quit", "Quit Tomoe")
 
@@ -47,37 +47,22 @@ func onTrayReady(app *App) {
 func (tm *trayManager) handleEvents() {
 	for {
 		select {
-		case <-tm.mStartStop.ClickedCh:
+		case <-tm.mDictation.ClickedCh:
 			if tm.app.ctx == nil {
-				continue // Wails not ready yet
-			}
-			tm.app.mu.Lock()
-			recording := tm.app.recording
-			dictating := tm.app.dictating
-			tm.app.mu.Unlock()
-
-			// Don't start meeting while dictating
-			if dictating {
 				continue
 			}
-
-			if recording {
-				_, _ = tm.app.StopSession()
-				tm.mStartStop.SetTitle("Start Meeting")
-				systray.SetIcon(trayIcon)
-				systray.SetTooltip("Tomoe — Speech-to-Text")
-			} else {
-				micDevice := tm.app.cfg.Audio.Device
-				monitorDevice := tm.app.cfg.Meeting.MonitorDevice
-				_ = tm.app.StartSession(micDevice, monitorDevice)
-				tm.mStartStop.SetTitle("Stop Meeting")
-				systray.SetIcon(trayIconRecording)
-				systray.SetTooltip("Tomoe — Meeting Recording...")
+			select {
+			case tm.app.trayDictCh <- struct{}{}:
+			default:
 			}
 
-		case <-tm.mShowWindow.ClickedCh:
-			if tm.app.ctx != nil {
-				wailsRuntime.WindowShow(tm.app.ctx)
+		case <-tm.mMeeting.ClickedCh:
+			if tm.app.ctx == nil {
+				continue
+			}
+			select {
+			case tm.app.trayMeetCh <- struct{}{}:
+			default:
 			}
 
 		case <-tm.mQuit.ClickedCh:
@@ -90,5 +75,40 @@ func (tm *trayManager) handleEvents() {
 			}
 			return
 		}
+	}
+}
+
+func (tm *trayManager) setIdle() {
+	systray.SetTooltip("Tomoe — Ready")
+	systray.SetIcon(trayIcon)
+	if tm.mDictation != nil {
+		tm.mDictation.SetTitle("Start Dictation")
+		tm.mDictation.Show()
+	}
+	if tm.mMeeting != nil {
+		tm.mMeeting.SetTitle("Start Meeting")
+		tm.mMeeting.Show()
+	}
+}
+
+func (tm *trayManager) setDictating() {
+	systray.SetTooltip("Tomoe — Dictating...")
+	systray.SetIcon(trayIconRecording)
+	if tm.mDictation != nil {
+		tm.mDictation.SetTitle("Stop Dictation")
+	}
+	if tm.mMeeting != nil {
+		tm.mMeeting.Hide()
+	}
+}
+
+func (tm *trayManager) setMeetingRecording() {
+	systray.SetTooltip("Tomoe — Meeting Recording...")
+	systray.SetIcon(trayIconRecording)
+	if tm.mMeeting != nil {
+		tm.mMeeting.SetTitle("Stop Meeting")
+	}
+	if tm.mDictation != nil {
+		tm.mDictation.Hide()
 	}
 }

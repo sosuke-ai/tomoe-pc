@@ -17,15 +17,17 @@ import (
 type Status struct {
 	ParakeetReady         bool
 	VADReady              bool
-	SpeakerEmbeddingReady bool
-	ParakeetPartial       bool // some but not all Parakeet files present
-	ModelDir              string
-	EncoderPath           string
-	DecoderPath           string
-	JoinerPath            string
-	TokensPath            string
-	VADPath               string
-	SpeakerEmbeddingPath  string
+	SpeakerEmbeddingReady    bool
+	SpeakerSegmentationReady bool
+	ParakeetPartial          bool // some but not all Parakeet files present
+	ModelDir                 string
+	EncoderPath              string
+	DecoderPath              string
+	JoinerPath               string
+	TokensPath               string
+	VADPath                  string
+	SpeakerEmbeddingPath     string
+	SpeakerSegmentationPath  string
 }
 
 // Manager handles model download, extraction, and verification.
@@ -54,13 +56,15 @@ func (m *Manager) Check() *Status {
 		JoinerPath:           filepath.Join(parakeetDir, joinerFile),
 		TokensPath:           filepath.Join(parakeetDir, tokensFile),
 		VADPath:              filepath.Join(m.modelDir, SileroVADFile),
-		SpeakerEmbeddingPath: filepath.Join(m.modelDir, SpeakerEmbeddingFile),
+		SpeakerEmbeddingPath:    filepath.Join(m.modelDir, SpeakerEmbeddingFile),
+		SpeakerSegmentationPath: filepath.Join(m.modelDir, PyannoteSegmentationSubdir, PyannoteSegmentationFile),
 	}
 
 	files := []string{s.EncoderPath, s.DecoderPath, s.JoinerPath, s.TokensPath}
 	s.ParakeetReady = allFilesExist(files...)
 	s.VADReady = fileExists(s.VADPath)
 	s.SpeakerEmbeddingReady = fileExists(s.SpeakerEmbeddingPath)
+	s.SpeakerSegmentationReady = fileExists(s.SpeakerSegmentationPath)
 
 	// Detect partial download (some files exist but not all)
 	if !s.ParakeetReady {
@@ -81,6 +85,11 @@ func (s *Status) Ready() bool {
 	return s.ParakeetReady && s.VADReady
 }
 
+// DiarizationReady reports whether speaker diarization models are present.
+func (s *Status) DiarizationReady() bool {
+	return s.SpeakerEmbeddingReady && s.SpeakerSegmentationReady
+}
+
 // String returns a human-readable summary.
 func (s *Status) String() string {
 	parakeet := "not downloaded"
@@ -97,8 +106,16 @@ func (s *Status) String() string {
 	if s.SpeakerEmbeddingReady {
 		speaker = "ready"
 	}
-	return fmt.Sprintf("Model dir: %s\nParakeet TDT INT8: %s\nSilero VAD: %s\nSpeaker Embedding: %s",
-		s.ModelDir, parakeet, vad, speaker)
+	segmentation := "not downloaded"
+	if s.SpeakerSegmentationReady {
+		segmentation = "ready"
+	}
+	diarization := "not ready"
+	if s.DiarizationReady() {
+		diarization = "ready"
+	}
+	return fmt.Sprintf("Model dir: %s\nParakeet TDT INT8: %s\nSilero VAD: %s\nSpeaker Embedding: %s\nSpeaker Segmentation: %s\nDiarization: %s",
+		s.ModelDir, parakeet, vad, speaker, segmentation, diarization)
 }
 
 // Download downloads and extracts all required models.
@@ -149,6 +166,17 @@ func (m *Manager) Download(force bool) error {
 		fmt.Println("Speaker embedding model downloaded.")
 	} else {
 		fmt.Println("Speaker embedding model already present, skipping.")
+	}
+
+	// Download Pyannote speaker segmentation model (for diarization)
+	if force || !status.SpeakerSegmentationReady {
+		fmt.Println("Downloading Pyannote speaker segmentation model...")
+		if err := m.downloadAndExtractArchive(PyannoteSegmentationURL); err != nil {
+			return fmt.Errorf("downloading Pyannote segmentation model: %w", err)
+		}
+		fmt.Println("Pyannote segmentation model downloaded.")
+	} else {
+		fmt.Println("Pyannote segmentation model already present, skipping.")
 	}
 
 	// Verify

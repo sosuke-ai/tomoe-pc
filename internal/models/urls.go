@@ -19,6 +19,15 @@ const (
 	// SpeakerEmbeddingFile is the filename for the speaker embedding model.
 	SpeakerEmbeddingFile = "3dspeaker_speech_eres2net_base_sv_zh-cn_3dspeaker_16k.onnx"
 
+	// PyannoteSegmentationURL is the download URL for the Pyannote speaker segmentation model archive.
+	PyannoteSegmentationURL = "https://github.com/k2-fsa/sherpa-onnx/releases/download/speaker-segmentation-models/sherpa-onnx-pyannote-segmentation-3-0.tar.bz2"
+
+	// PyannoteSegmentationSubdir is the directory name after extraction.
+	PyannoteSegmentationSubdir = "sherpa-onnx-pyannote-segmentation-3-0"
+
+	// PyannoteSegmentationFile is the model file inside the extraction directory.
+	PyannoteSegmentationFile = "model.onnx"
+
 	// Expected model files inside the Parakeet subdirectory.
 	encoderFile = "encoder.int8.onnx"
 	decoderFile = "decoder.int8.onnx"

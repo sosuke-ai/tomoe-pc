@@ -125,9 +125,10 @@ func TestAssignSpeakerMonitorNoEmbedder(t *testing.T) {
 		cfg: Config{},
 	}
 
+	// Without embedder, all monitor segments get "Other"
 	label := c.assignSpeaker(SourceMonitor, []float32{0.1, 0.2})
 	if label != "Other" {
-		t.Errorf("monitor speaker without embedder = %q, want %q", label, "Other")
+		t.Errorf("monitor speaker = %q, want %q", label, "Other")
 	}
 }
 

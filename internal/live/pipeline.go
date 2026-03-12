@@ -100,11 +100,11 @@ func (c *Coordinator) drainVAD(vad *sherpa.VoiceActivityDetector, source SourceT
 			continue
 		}
 
-		// Determine speaker label
-		speaker := c.assignSpeaker(source, samples)
-
 		endTime := c.elapsed()
 		startTime := endTime - result.Duration
+
+		// Determine speaker label
+		speaker := c.assignSpeaker(source, samples)
 
 		seg := session.Segment{
 			ID:        c.nextSegID(),

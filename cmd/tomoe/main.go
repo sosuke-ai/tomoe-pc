@@ -42,6 +42,7 @@ func init() {
 	rootCmd.AddCommand(statusCmd)
 	rootCmd.AddCommand(configCmd)
 	rootCmd.AddCommand(modelCmd)
+	rootCmd.AddCommand(sessionCmd)
 	rootCmd.AddCommand(transcribeCmd)
 	rootCmd.AddCommand(devicesCmd)
 	rootCmd.AddCommand(stopCmd)
@@ -315,13 +316,13 @@ var modelStatusCmd = &cobra.Command{
 
 var transcribeCmd = &cobra.Command{
 	Use:   "transcribe <file>",
-	Short: "Transcribe an audio file (WAV, FLAC, OGG)",
+	Short: "Transcribe an audio file (WAV, FLAC, OGG, MP3) with speaker identification",
 	Args:  cobra.ExactArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
 		filePath := args[0]
 
 		if !transcribe.IsSupportedFormat(filePath) {
-			return fmt.Errorf("unsupported audio format: %s (supported: .wav, .flac, .ogg)", filePath)
+			return fmt.Errorf("unsupported audio format: %s (supported: .wav, .flac, .ogg, .mp3)", filePath)
 		}
 
 		if _, err := os.Stat(filePath); os.IsNotExist(err) {
@@ -347,6 +348,9 @@ var transcribeCmd = &cobra.Command{
 			return fmt.Errorf("models not downloaded (run 'tomoe init' or 'tomoe model download')")
 		}
 
+		gpuInfo := gpu.Detect()
+		useGPU := gpuInfo.Available && gpuInfo.Sufficient
+
 		// Create transcription engine
 		engine, err := transcribe.NewEngine(transcribe.Config{
 			EncoderPath: status.EncoderPath,
@@ -354,14 +358,19 @@ var transcribeCmd = &cobra.Command{
 			JoinerPath:  status.JoinerPath,
 			TokensPath:  status.TokensPath,
 			VADPath:     status.VADPath,
-			UseGPU:      cfg.Transcription.GPUEnabled,
+			UseGPU:      useGPU,
 		})
 		if err != nil {
 			return fmt.Errorf("creating transcription engine: %w", err)
 		}
 		defer engine.Close()
 
-		// Transcribe
+		// If diarization models are available, transcribe with speaker labels
+		if status.DiarizationReady() {
+			return transcribeWithSpeakers(engine, filePath, status, useGPU)
+		}
+
+		// Fallback: plain transcription without speaker identification
 		result, err := engine.TranscribeFile(filePath)
 		if err != nil {
 			return fmt.Errorf("transcription failed: %w", err)
@@ -382,6 +391,70 @@ var transcribeCmd = &cobra.Command{
 
 		return nil
 	},
+}
+
+// transcribeWithSpeakers runs diarization then transcribes each speaker segment.
+func transcribeWithSpeakers(engine transcribe.Engine, filePath string, status *models.Status, useGPU bool) error {
+	// Decode audio to float32 for diarization
+	samples, err := session.DecodeToFloat32(filePath)
+	if err != nil {
+		return fmt.Errorf("decoding audio: %w", err)
+	}
+
+	duration := float64(len(samples)) / 16000.0
+	fmt.Fprintf(os.Stderr, "Identifying speakers in %.1fs of audio...\n", duration)
+
+	// Run diarization
+	diarSegments, speakerMap, err := session.Diarize(samples, session.DiarizeConfig{
+		SegmentationModelPath: status.SpeakerSegmentationPath,
+		EmbeddingModelPath:    status.SpeakerEmbeddingPath,
+		Threshold:             1.1,
+		MergeThreshold:        0.55,
+		UseGPU:                useGPU,
+	})
+	if err != nil {
+		return fmt.Errorf("diarization failed: %w", err)
+	}
+
+	if len(diarSegments) == 0 {
+		fmt.Println("(no speech detected)")
+		return nil
+	}
+
+	fmt.Fprintf(os.Stderr, "Found %d speakers, transcribing...\n", len(speakerMap))
+
+	// Transcribe each diarization segment
+	for _, ds := range diarSegments {
+		startIdx := int(ds.Start * 16000)
+		endIdx := int(ds.End * 16000)
+		if startIdx < 0 {
+			startIdx = 0
+		}
+		if endIdx > len(samples) {
+			endIdx = len(samples)
+		}
+		if startIdx >= endIdx {
+			continue
+		}
+
+		segSamples := samples[startIdx:endIdx]
+		result, err := engine.TranscribeDirect(segSamples)
+		if err != nil || result.Text == "" {
+			continue
+		}
+
+		label := speakerMap[ds.Speaker]
+		fmt.Printf("[%s] %s: %s\n", formatTimestamp(ds.Start), label, result.Text)
+	}
+
+	fmt.Fprintf(os.Stderr, "Duration: %.1fs\n", duration)
+	return nil
+}
+
+func formatTimestamp(seconds float64) string {
+	m := int(seconds) / 60
+	s := int(seconds) % 60
+	return fmt.Sprintf("%02d:%02d", m, s)
 }
 
 var devicesCmd = &cobra.Command{
@@ -417,6 +490,94 @@ var versionCmd = &cobra.Command{
 	Short: "Print the version",
 	Run: func(cmd *cobra.Command, args []string) {
 		fmt.Printf("tomoe %s\n", Version)
+	},
+}
+
+var sessionCmd = &cobra.Command{
+	Use:   "session",
+	Short: "Manage recorded sessions",
+}
+
+func init() {
+	sessionRetranscribeCmd.Flags().BoolP("verbose", "v", false, "Print processing details")
+	sessionCmd.AddCommand(sessionRetranscribeCmd)
+	sessionCmd.AddCommand(sessionListCmd)
+}
+
+var sessionRetranscribeCmd = &cobra.Command{
+	Use:   "re-transcribe <session-id>",
+	Short: "Re-process a session's audio: re-transcribe and identify speakers",
+	Args:  cobra.ExactArgs(1),
+	RunE: func(cmd *cobra.Command, args []string) error {
+		mgr := models.NewManager(config.ModelDir())
+		status := mgr.Check()
+		if !status.Ready() {
+			return fmt.Errorf("transcription models not downloaded (run 'tomoe model download')")
+		}
+		if !status.DiarizationReady() {
+			return fmt.Errorf("diarization models not downloaded (run 'tomoe model download')")
+		}
+
+		verbose, _ := cmd.Flags().GetBool("verbose")
+		gpuInfo := gpu.Detect()
+		useGPU := gpuInfo.Available && gpuInfo.Sufficient
+
+		if verbose {
+			fmt.Println(gpuInfo)
+		}
+
+		store := session.NewStore(config.SessionDir())
+		sess, err := store.Load(args[0])
+		if err != nil {
+			return fmt.Errorf("loading session: %w", err)
+		}
+
+		if sess.AudioPath == "" {
+			return fmt.Errorf("session %q has no recorded audio", sess.Title)
+		}
+
+		// Step 1: Diarize to identify speakers
+		fmt.Printf("Identifying speakers in %q...\n", sess.Title)
+		count, err := session.ReidentifyByDiarization(sess, session.DiarizeConfig{
+			SegmentationModelPath: status.SpeakerSegmentationPath,
+			EmbeddingModelPath:    status.SpeakerEmbeddingPath,
+			Threshold:             1.1,
+			MergeThreshold:        0.55,
+			UseGPU:                useGPU,
+			Verbose:               verbose,
+		})
+		if err != nil {
+			return fmt.Errorf("diarization failed: %w", err)
+		}
+
+		if err := store.Save(sess); err != nil {
+			return fmt.Errorf("saving session: %w", err)
+		}
+
+		fmt.Printf("Done: identified speakers for %d segments.\n", count)
+		return nil
+	},
+}
+
+var sessionListCmd = &cobra.Command{
+	Use:   "list",
+	Short: "List all saved sessions",
+	RunE: func(cmd *cobra.Command, args []string) error {
+		store := session.NewStore(config.SessionDir())
+		sessions, err := store.List()
+		if err != nil {
+			return fmt.Errorf("listing sessions: %w", err)
+		}
+		if len(sessions) == 0 {
+			fmt.Println("No sessions found.")
+			return nil
+		}
+
+		for _, sess := range sessions {
+			fmt.Printf("  %s  %s  (%d segments, %.0fs)\n",
+				sess.ID, sess.Title, len(sess.Segments), sess.Duration)
+		}
+		return nil
 	},
 }
 

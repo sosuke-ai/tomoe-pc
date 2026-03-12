@@ -115,6 +115,50 @@ func (d *Daemon) Run(ctx context.Context) error {
 	// Auto-stop channel — signalled by streaming dictation on silence timeout
 	autoStopCh := make(chan struct{}, 1)
 
+	// toggleDictation handles start/stop dictation from any trigger (hotkey or tray).
+	toggleDictation := func() {
+		if meetState != nil {
+			return // ignore dictation while meeting active
+		}
+		if dictState == nil {
+			ds, err := d.startStreamingDictation(ctx, autoStopCh)
+			if err != nil {
+				_ = d.svc.Notifier.Send("Tomoe", fmt.Sprintf("Dictation failed: %v", err))
+				fmt.Printf("Error starting dictation: %v\n", err)
+				return
+			}
+			dictState = ds
+			d.tray.SetDictating()
+			_ = d.svc.Notifier.Send("Tomoe", "Dictating...")
+			fmt.Println("Streaming dictation started...")
+		} else {
+			d.stopDictation(dictState)
+			dictState = nil
+		}
+	}
+
+	// toggleMeeting handles start/stop meeting from any trigger (hotkey or tray).
+	toggleMeeting := func() {
+		if dictState != nil {
+			return // ignore meeting while dictating
+		}
+		if meetState == nil {
+			ms, err := d.startMeeting(ctx)
+			if err != nil {
+				_ = d.svc.Notifier.Send("Tomoe", fmt.Sprintf("Meeting start failed: %v", err))
+				fmt.Printf("Error starting meeting: %v\n", err)
+				return
+			}
+			meetState = ms
+			d.tray.SetMeetingRecording()
+			_ = d.svc.Notifier.Send("Tomoe", "Meeting recording started")
+			fmt.Println("Meeting recording started...")
+		} else {
+			d.stopMeeting(meetState)
+			meetState = nil
+		}
+	}
+
 	for {
 		select {
 		case <-ctx.Done():
@@ -133,27 +177,10 @@ func (d *Daemon) Run(ctx context.Context) error {
 			return nil
 
 		case <-d.svc.Hotkey.Keydown():
-			if meetState != nil {
-				continue // ignore dictation while meeting active
-			}
+			toggleDictation()
 
-			if dictState == nil {
-				// Start streaming dictation
-				ds, err := d.startStreamingDictation(ctx, autoStopCh)
-				if err != nil {
-					_ = d.svc.Notifier.Send("Tomoe", fmt.Sprintf("Dictation failed: %v", err))
-					fmt.Printf("Error starting dictation: %v\n", err)
-					continue
-				}
-				dictState = ds
-				d.tray.SetDictating()
-				_ = d.svc.Notifier.Send("Tomoe", "Dictating...")
-				fmt.Println("Streaming dictation started...")
-			} else {
-				// Stop dictation
-				d.stopDictation(dictState)
-				dictState = nil
-			}
+		case <-d.tray.dictationCh:
+			toggleDictation()
 
 		case <-autoStopCh:
 			if dictState != nil {
@@ -165,27 +192,10 @@ func (d *Daemon) Run(ctx context.Context) error {
 			}
 
 		case <-meetingCh:
-			if dictState != nil {
-				continue // ignore meeting while dictating
-			}
+			toggleMeeting()
 
-			if meetState == nil {
-				// Start meeting recording
-				ms, err := d.startMeeting(ctx)
-				if err != nil {
-					_ = d.svc.Notifier.Send("Tomoe", fmt.Sprintf("Meeting start failed: %v", err))
-					fmt.Printf("Error starting meeting: %v\n", err)
-					continue
-				}
-				meetState = ms
-				d.tray.SetMeetingRecording()
-				_ = d.svc.Notifier.Send("Tomoe", "Meeting recording started")
-				fmt.Println("Meeting recording started...")
-			} else {
-				// Stop meeting recording
-				d.stopMeeting(meetState)
-				meetState = nil
-			}
+		case <-d.tray.meetingCh:
+			toggleMeeting()
 		}
 	}
 }
@@ -427,6 +437,9 @@ func (d *Daemon) startMeeting(ctx context.Context) (*meetingState, error) {
 func (d *Daemon) stopMeeting(ms *meetingState) {
 	ms.coordinator.Stop()
 	<-ms.done
+
+	// Update tray immediately so the user sees feedback before MP3 encoding
+	d.tray.SetIdle()
 	// Re-grab hotkeys — audio/tray operations can interfere with X11 grabs
 	hotkey.ReGrabAll()
 
@@ -445,12 +458,28 @@ func (d *Daemon) stopMeeting(ms *meetingState) {
 				ms.session.AudioPath = audioPath
 			}
 		}
+
+		// Post-processing: run neural diarization to refine speaker labels
+		if d.modelStatus != nil && d.modelStatus.DiarizationReady() {
+			count, err := session.ReidentifyByDiarization(ms.session, session.DiarizeConfig{
+				SegmentationModelPath: d.modelStatus.SpeakerSegmentationPath,
+				EmbeddingModelPath:    d.modelStatus.SpeakerEmbeddingPath,
+				Threshold:             1.1,
+				MergeThreshold:        0.55,
+				UseGPU:                d.cfg.Transcription.GPUEnabled,
+			})
+			if err != nil {
+				fmt.Printf("Warning: post-recording diarization failed: %v\n", err)
+			} else if count > 0 {
+				fmt.Printf("Post-processing: refined speaker labels for %d segments\n", count)
+			}
+		}
+
 		if err := d.store.Save(ms.session); err != nil {
 			fmt.Printf("Error saving session: %v\n", err)
 		}
 	}
 
-	d.tray.SetIdle()
 	msg := fmt.Sprintf("Meeting saved — %d segments, %s", segCount, duration.Round(time.Second))
 	_ = d.svc.Notifier.Send("Tomoe", msg)
 	fmt.Println(msg)

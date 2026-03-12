@@ -41,9 +41,15 @@ func (s *Store) Save(sess *Session) error {
 	return nil
 }
 
-// Load reads a session from disk by ID.
+// Load reads a session from disk by ID. Supports unique prefix matching
+// (e.g., "9237d6bd" matches "9237d6bd-755b-4ef7-948c-3ae5a5c61597").
 func (s *Store) Load(id string) (*Session, error) {
-	path := filepath.Join(s.baseDir, id, sessionFileName)
+	resolvedID, err := s.resolveID(id)
+	if err != nil {
+		return nil, err
+	}
+
+	path := filepath.Join(s.baseDir, resolvedID, sessionFileName)
 	data, err := os.ReadFile(path)
 	if err != nil {
 		return nil, fmt.Errorf("reading session file: %w", err)
@@ -55,6 +61,37 @@ func (s *Store) Load(id string) (*Session, error) {
 	}
 
 	return &sess, nil
+}
+
+// resolveID resolves a full or prefix session ID to the actual directory name.
+func (s *Store) resolveID(id string) (string, error) {
+	// Try exact match first
+	exact := filepath.Join(s.baseDir, id, sessionFileName)
+	if _, err := os.Stat(exact); err == nil {
+		return id, nil
+	}
+
+	// Try prefix match
+	entries, err := os.ReadDir(s.baseDir)
+	if err != nil {
+		return "", fmt.Errorf("reading session directory: %w", err)
+	}
+
+	var matches []string
+	for _, entry := range entries {
+		if entry.IsDir() && len(entry.Name()) >= len(id) && entry.Name()[:len(id)] == id {
+			matches = append(matches, entry.Name())
+		}
+	}
+
+	switch len(matches) {
+	case 0:
+		return "", fmt.Errorf("no session found matching %q", id)
+	case 1:
+		return matches[0], nil
+	default:
+		return "", fmt.Errorf("ambiguous session ID %q matches %d sessions", id, len(matches))
+	}
 }
 
 // List returns all stored sessions, sorted by creation time (newest first).
@@ -87,8 +124,13 @@ func (s *Store) List() ([]*Session, error) {
 }
 
 // Delete removes a session and its directory from disk.
+// Supports prefix matching like Load.
 func (s *Store) Delete(id string) error {
-	dir := filepath.Join(s.baseDir, id)
+	resolvedID, err := s.resolveID(id)
+	if err != nil {
+		return err
+	}
+	dir := filepath.Join(s.baseDir, resolvedID)
 	if err := os.RemoveAll(dir); err != nil {
 		return fmt.Errorf("deleting session: %w", err)
 	}
