@@ -24,6 +24,9 @@ import (
 )
 
 func main() {
+	// Load GPU libraries if available (must run before any cgo)
+	config.EnsureGPULibs()
+
 	if len(os.Args) >= 4 && os.Args[1] == "--run" {
 		runSingle()
 		return
