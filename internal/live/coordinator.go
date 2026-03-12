@@ -164,7 +164,8 @@ func (c *Coordinator) Stats() Stats {
 	}
 }
 
-// AudioSamples returns accumulated audio from all sources.
+// AudioSamples returns accumulated audio from all sources (concatenated).
+// For single-source sessions only. Use MicSamples/MonitorSamples for per-track access.
 func (c *Coordinator) AudioSamples() []float32 {
 	var all []float32
 	if c.cfg.MicCapturer != nil {
@@ -174,6 +175,27 @@ func (c *Coordinator) AudioSamples() []float32 {
 		all = append(all, c.cfg.MonitorCapturer.AllSamples()...)
 	}
 	return all
+}
+
+// MicSamples returns accumulated audio from the mic source, or nil if no mic.
+func (c *Coordinator) MicSamples() []float32 {
+	if c.cfg.MicCapturer == nil {
+		return nil
+	}
+	return c.cfg.MicCapturer.AllSamples()
+}
+
+// MonitorSamples returns accumulated audio from the monitor source, or nil if no monitor.
+func (c *Coordinator) MonitorSamples() []float32 {
+	if c.cfg.MonitorCapturer == nil {
+		return nil
+	}
+	return c.cfg.MonitorCapturer.AllSamples()
+}
+
+// IsDualSource returns true if both mic and monitor sources are configured.
+func (c *Coordinator) IsDualSource() bool {
+	return c.cfg.MicCapturer != nil && c.cfg.MonitorCapturer != nil
 }
 
 func (c *Coordinator) nextSegID() string {

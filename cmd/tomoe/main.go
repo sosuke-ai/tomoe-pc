@@ -322,7 +322,7 @@ var transcribeCmd = &cobra.Command{
 		filePath := args[0]
 
 		if !transcribe.IsSupportedFormat(filePath) {
-			return fmt.Errorf("unsupported audio format: %s (supported: .wav, .flac, .ogg, .mp3)", filePath)
+			return fmt.Errorf("unsupported audio format: %s (supported: .wav, .flac, .ogg, .mp3, .m4a)", filePath)
 		}
 
 		if _, err := os.Stat(filePath); os.IsNotExist(err) {

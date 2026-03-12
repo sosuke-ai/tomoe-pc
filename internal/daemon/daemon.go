@@ -450,12 +450,26 @@ func (d *Daemon) stopMeeting(ms *meetingState) {
 	segCount := len(ms.session.Segments)
 
 	if d.store != nil {
-		// Save audio as MP3
-		samples := ms.coordinator.AudioSamples()
-		if len(samples) > 0 {
-			audioPath := config.SessionDir() + "/" + ms.session.ID + "/audio.mp3"
-			if err := session.SaveAudioMP3(samples, 16000, audioPath); err == nil {
+		// Save audio as M4A
+		var tracks [][]float32
+		if ms.coordinator.IsDualSource() {
+			mic := ms.coordinator.MicSamples()
+			mon := ms.coordinator.MonitorSamples()
+			if len(mic) > 0 && len(mon) > 0 {
+				tracks = [][]float32{mic, mon}
+			}
+		} else {
+			samples := ms.coordinator.AudioSamples()
+			if len(samples) > 0 {
+				tracks = [][]float32{samples}
+			}
+		}
+		if len(tracks) > 0 {
+			audioPath := config.SessionDir() + "/" + ms.session.ID + "/audio.m4a"
+			if err := session.SaveAudioM4A(tracks, 16000, audioPath); err == nil {
 				ms.session.AudioPath = audioPath
+			} else {
+				fmt.Printf("Error saving audio: %v\n", err)
 			}
 		}
 

@@ -276,11 +276,25 @@ func (a *App) StopSession() (*session.Session, error) {
 
 	// Save audio + session in background so UI doesn't block
 	go func() {
-		samples := coordinator.AudioSamples()
-		if len(samples) > 0 {
-			audioPath := config.SessionDir() + "/" + sess.ID + "/audio.mp3"
-			if err := session.SaveAudioMP3(samples, 16000, audioPath); err == nil {
+		var tracks [][]float32
+		if coordinator.IsDualSource() {
+			mic := coordinator.MicSamples()
+			mon := coordinator.MonitorSamples()
+			if len(mic) > 0 && len(mon) > 0 {
+				tracks = [][]float32{mic, mon}
+			}
+		} else {
+			samples := coordinator.AudioSamples()
+			if len(samples) > 0 {
+				tracks = [][]float32{samples}
+			}
+		}
+		if len(tracks) > 0 {
+			audioPath := config.SessionDir() + "/" + sess.ID + "/audio.m4a"
+			if err := session.SaveAudioM4A(tracks, 16000, audioPath); err == nil {
 				sess.AudioPath = audioPath
+			} else {
+				fmt.Printf("Error saving audio: %v\n", err)
 			}
 		}
 

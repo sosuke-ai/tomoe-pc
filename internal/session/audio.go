@@ -3,10 +3,12 @@ package session
 import (
 	"encoding/binary"
 	"fmt"
+	"io"
 	"math"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 )
 
 // SaveAudioMP3 converts float32 PCM samples to an MP3 file via ffmpeg.
@@ -47,6 +49,138 @@ func SaveAudioMP3(samples []float32, sampleRate int, path string) error {
 	}
 
 	return nil
+}
+
+// SaveAudioM4A saves one or more audio tracks as an M4A (MP4+AAC) file via ffmpeg.
+// For dual-source sessions: tracks[0]=mic, tracks[1]=monitor (separate AAC streams).
+// For single-source sessions: tracks[0]=the single source.
+func SaveAudioM4A(tracks [][]float32, sampleRate int, path string) error {
+	if len(tracks) == 0 {
+		return fmt.Errorf("no audio tracks to save")
+	}
+	for i, t := range tracks {
+		if len(t) == 0 {
+			return fmt.Errorf("track %d has no samples", i)
+		}
+	}
+
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		return fmt.Errorf("creating output directory: %w", err)
+	}
+
+	// Write each track to a temporary WAV file
+	tmpPaths := make([]string, len(tracks))
+	for i, samples := range tracks {
+		tmpWAV, err := os.CreateTemp("", fmt.Sprintf("tomoe-track%d-*.wav", i))
+		if err != nil {
+			cleanupTempFiles(tmpPaths[:i])
+			return fmt.Errorf("creating temp WAV for track %d: %w", i, err)
+		}
+		tmpPaths[i] = tmpWAV.Name()
+
+		if err := writeWAV(tmpWAV, samples, sampleRate); err != nil {
+			_ = tmpWAV.Close()
+			cleanupTempFiles(tmpPaths[:i+1])
+			return fmt.Errorf("writing WAV for track %d: %w", i, err)
+		}
+		_ = tmpWAV.Close()
+	}
+	defer cleanupTempFiles(tmpPaths)
+
+	// Build ffmpeg command
+	args := []string{"-y"}
+	for _, p := range tmpPaths {
+		args = append(args, "-i", p)
+	}
+
+	if len(tracks) >= 2 {
+		// Dual-source: 3 output tracks — merged (default), mic, monitor
+		// Track 0: merged mix of all inputs (default — plays in media players)
+		// Track 1: mic only
+		// Track 2: monitor only
+		args = append(args,
+			"-filter_complex", "[0:a][1:a]amix=inputs=2:duration=longest[mixed]",
+			"-map", "[mixed]", "-map", "0:a", "-map", "1:a",
+			"-c:a", "aac", "-b:a", "128k",
+			"-metadata:s:a:0", "title=mixed",
+			"-metadata:s:a:1", "title=mic",
+			"-metadata:s:a:2", "title=monitor",
+			"-disposition:a:0", "default",
+			"-disposition:a:1", "0",
+			"-disposition:a:2", "0",
+		)
+	} else {
+		// Single-source: 1 track
+		args = append(args, "-map", "0:a", "-c:a", "aac", "-b:a", "128k")
+	}
+	args = append(args, path)
+
+	cmd := exec.Command("ffmpeg", args...)
+	if output, err := cmd.CombinedOutput(); err != nil {
+		return fmt.Errorf("ffmpeg M4A encoding: %w: %s", err, string(output))
+	}
+
+	return nil
+}
+
+func cleanupTempFiles(paths []string) {
+	for _, p := range paths {
+		if p != "" {
+			_ = os.Remove(p)
+		}
+	}
+}
+
+// DecodeTrackToFloat32 extracts a single audio track from a multi-track file
+// and decodes it to 16kHz mono float32 PCM using ffmpeg.
+// track is 0-indexed (0=mic, 1=monitor for dual-source sessions).
+func DecodeTrackToFloat32(path string, track int) ([]float32, error) {
+	if _, err := exec.LookPath("ffmpeg"); err != nil {
+		return nil, fmt.Errorf("ffmpeg not found: install ffmpeg")
+	}
+
+	cmd := exec.Command("ffmpeg",
+		"-i", path,
+		"-map", fmt.Sprintf("0:a:%d", track),
+		"-ar", fmt.Sprintf("%d", pcmSampleRate),
+		"-ac", "1",
+		"-f", "s16le",
+		"-acodec", "pcm_s16le",
+		"-",
+	)
+
+	stdout, err := cmd.StdoutPipe()
+	if err != nil {
+		return nil, fmt.Errorf("creating stdout pipe: %w", err)
+	}
+	cmd.Stderr = nil
+
+	if err := cmd.Start(); err != nil {
+		return nil, fmt.Errorf("starting ffmpeg: %w", err)
+	}
+
+	data, err := io.ReadAll(stdout)
+	if err != nil {
+		return nil, fmt.Errorf("reading ffmpeg output: %w", err)
+	}
+
+	if err := cmd.Wait(); err != nil {
+		return nil, fmt.Errorf("ffmpeg exited with error: %w", err)
+	}
+
+	numSamples := len(data) / 2
+	samples := make([]float32, numSamples)
+	for i := range numSamples {
+		s16 := int16(binary.LittleEndian.Uint16(data[i*2 : i*2+2]))
+		samples[i] = float32(s16) / float32(math.MaxInt16)
+	}
+
+	return samples, nil
+}
+
+// IsM4A returns true if the path ends with .m4a.
+func IsM4A(path string) bool {
+	return strings.HasSuffix(strings.ToLower(path), ".m4a")
 }
 
 // writeWAV writes float32 PCM samples as a 16-bit WAV file.

@@ -33,7 +33,7 @@ func TestSessionJSONRoundTrip(t *testing.T) {
 				Source:    "monitor",
 			},
 		},
-		AudioPath: "/tmp/test/audio.mp3",
+		AudioPath: "/tmp/test/audio.m4a",
 	}
 
 	data, err := json.Marshal(sess)

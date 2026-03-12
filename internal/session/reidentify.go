@@ -242,19 +242,17 @@ func ReidentifyByDiarization(sess *Session, cfg DiarizeConfig) (int, error) {
 		return 0, fmt.Errorf("audio file not found: %s", sess.AudioPath)
 	}
 
-	allSamples, err := DecodeToFloat32(sess.AudioPath)
+	// Extract monitor audio (format-aware: M4A track extraction or legacy MP3 midpoint split)
+	samples, err := extractMonitorAudio(sess.AudioPath, sess)
 	if err != nil {
-		return 0, fmt.Errorf("decoding audio: %w", err)
+		return 0, fmt.Errorf("extracting monitor audio: %w", err)
 	}
-
-	// Extract monitor portion for dual-source sessions
-	samples := extractMonitorAudio(allSamples, sess)
 	if samples == nil {
 		return 0, nil
 	}
 
-	if cfg.Verbose && len(samples) != len(allSamples) {
-		fmt.Printf("Dual-source audio: using monitor portion (%d samples, %.1fs) for diarization\n",
+	if cfg.Verbose {
+		fmt.Printf("Monitor audio: %d samples, %.1fs for diarization\n",
 			len(samples), float64(len(samples))/float64(pcmSampleRate))
 	}
 
@@ -301,11 +299,11 @@ func ReidentifyByDiarization(sess *Session, cfg DiarizeConfig) (int, error) {
 	return count, nil
 }
 
-
-// extractMonitorAudio returns just the monitor portion of the audio for sessions
-// with both mic and monitor sources. The saved audio concatenates [mic][monitor].
-// For single-source sessions, returns all samples unchanged.
-func extractMonitorAudio(allSamples []float32, sess *Session) []float32 {
+// extractMonitorAudio returns the monitor audio samples for diarization.
+// For M4A files: extracts the appropriate track directly (track 1 for dual-source, track 0 for single-source).
+// For legacy MP3 files: falls back to midpoint split for dual-source backward compat.
+// Returns nil if the session has no monitor source.
+func extractMonitorAudio(audioPath string, sess *Session) ([]float32, error) {
 	hasMic := false
 	hasMonitor := false
 	for _, src := range sess.Sources {
@@ -316,15 +314,34 @@ func extractMonitorAudio(allSamples []float32, sess *Session) []float32 {
 			hasMonitor = true
 		}
 	}
-	if hasMic && hasMonitor {
-		return allSamples[len(allSamples)/2:]
-	}
-	if !hasMonitor {
-		return nil
-	}
-	return allSamples
-}
 
+	if !hasMonitor {
+		return nil, nil
+	}
+
+	if IsM4A(audioPath) {
+		if hasMic {
+			// Dual-source M4A: track 0=mixed, track 1=mic, track 2=monitor
+			return DecodeTrackToFloat32(audioPath, 2)
+		}
+		// Single-source M4A: monitor is track 0
+		return DecodeTrackToFloat32(audioPath, 0)
+	}
+
+	// Legacy MP3 format
+	allSamples, err := DecodeToFloat32(audioPath)
+	if err != nil {
+		return nil, err
+	}
+
+	if hasMic {
+		// Legacy dual-source MP3: midpoint split
+		return allSamples[len(allSamples)/2:], nil
+	}
+
+	// Legacy monitor-only MP3
+	return allSamples, nil
+}
 
 // DecodeToFloat32 decodes an audio file (MP3, WAV, etc.) to 16kHz mono float32 PCM using ffmpeg.
 func DecodeToFloat32(path string) ([]float32, error) {

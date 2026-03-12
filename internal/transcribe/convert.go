@@ -14,6 +14,7 @@ var supportedExtensions = map[string]bool{
 	".flac": true,
 	".ogg":  true,
 	".mp3":  true,
+	".m4a":  true,
 }
 
 // IsSupportedFormat checks if the file extension is a supported audio format.

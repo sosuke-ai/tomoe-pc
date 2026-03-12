@@ -96,15 +96,25 @@ func runSingle() {
 	mgr := models.NewManager(config.ModelDir())
 	status := mgr.Check()
 
-	allSamples, err := session.DecodeToFloat32(audioPath)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "decode error: %v\n", err)
-		os.Exit(1)
-	}
-
-	samples := allSamples
-	if hasMic {
-		samples = allSamples[len(allSamples)/2:]
+	var samples []float32
+	if hasMic && session.IsM4A(audioPath) {
+		// M4A: track 0=mixed, track 1=mic, track 2=monitor
+		samples, err = session.DecodeTrackToFloat32(audioPath, 2)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "M4A track extraction error: %v\n", err)
+			os.Exit(1)
+		}
+	} else {
+		allSamples, decErr := session.DecodeToFloat32(audioPath)
+		if decErr != nil {
+			fmt.Fprintf(os.Stderr, "decode error: %v\n", decErr)
+			os.Exit(1)
+		}
+		samples = allSamples
+		if hasMic {
+			// Legacy MP3: midpoint split
+			samples = allSamples[len(allSamples)/2:]
+		}
 	}
 
 	gpuInfo := gpu.Detect()
@@ -167,9 +177,13 @@ func collectSessions(filterIDs []string) []benchSession {
 		}
 
 		jsonPath := filepath.Join(sessionDir, id, "session.json")
-		audioPath := filepath.Join(sessionDir, id, "audio.mp3")
+		// Look for M4A first, fall back to legacy MP3
+		audioPath := filepath.Join(sessionDir, id, "audio.m4a")
 		if _, err := os.Stat(audioPath); err != nil {
-			continue
+			audioPath = filepath.Join(sessionDir, id, "audio.mp3")
+			if _, err := os.Stat(audioPath); err != nil {
+				continue
+			}
 		}
 
 		data, err := os.ReadFile(jsonPath)
