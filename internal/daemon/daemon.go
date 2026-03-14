@@ -15,6 +15,7 @@ import (
 	"github.com/sosuke-ai/tomoe-pc/internal/config"
 	"github.com/sosuke-ai/tomoe-pc/internal/hotkey"
 	"github.com/sosuke-ai/tomoe-pc/internal/live"
+	"github.com/sosuke-ai/tomoe-pc/internal/meeting"
 	"github.com/sosuke-ai/tomoe-pc/internal/models"
 	"github.com/sosuke-ai/tomoe-pc/internal/platform"
 	"github.com/sosuke-ai/tomoe-pc/internal/session"
@@ -35,6 +36,7 @@ type Daemon struct {
 	tracker       *speaker.Tracker
 	store         *session.Store
 	modelStatus   *models.Status
+	detector      *meeting.Detector
 
 	tray *daemonTray
 }
@@ -46,6 +48,7 @@ type MeetingOpts struct {
 	Tracker       *speaker.Tracker
 	Store         *session.Store
 	ModelStatus   *models.Status
+	Detector      *meeting.Detector
 }
 
 // New creates a Daemon with the given dependencies.
@@ -61,6 +64,7 @@ func New(cfg *config.Config, engine transcribe.Engine, svc *platform.Services, o
 		d.tracker = opts.Tracker
 		d.store = opts.Store
 		d.modelStatus = opts.ModelStatus
+		d.detector = opts.Detector
 	}
 	return d
 }
@@ -89,6 +93,17 @@ func (d *Daemon) Run(ctx context.Context) error {
 			fmt.Fprintf(os.Stderr, "Warning: could not register meeting hotkey: %v\n", err)
 		} else {
 			meetingCh = d.meetingHotkey.Keydown()
+		}
+	}
+
+	// Start meeting auto-detector (optional)
+	var detectCh <-chan meeting.MeetingEvent
+	if d.detector != nil {
+		if err := d.detector.Start(ctx); err != nil {
+			fmt.Fprintf(os.Stderr, "Warning: meeting auto-detect unavailable: %v\n", err)
+		} else {
+			detectCh = d.detector.Events()
+			defer d.detector.Stop()
 		}
 	}
 
@@ -196,6 +211,31 @@ func (d *Daemon) Run(ctx context.Context) error {
 
 		case <-d.tray.meetingCh:
 			toggleMeeting()
+
+		case evt := <-detectCh:
+			switch evt.Type {
+			case meeting.MeetingStarted:
+				if dictState != nil || meetState != nil {
+					break // ignore if already recording
+				}
+				platform := string(evt.Platform)
+				ms, err := d.startMeetingWithPlatform(ctx, platform)
+				if err != nil {
+					_ = d.svc.Notifier.Send("Tomoe", fmt.Sprintf("Auto-detect meeting start failed: %v", err))
+					fmt.Printf("Error auto-starting meeting: %v\n", err)
+					break
+				}
+				meetState = ms
+				d.tray.SetMeetingRecording()
+				msg := fmt.Sprintf("%s meeting detected — recording started", platform)
+				_ = d.svc.Notifier.Send("Tomoe", msg)
+				fmt.Println(msg)
+			case meeting.MeetingStopped:
+				if meetState != nil {
+					d.stopMeeting(meetState)
+					meetState = nil
+				}
+			}
 		}
 	}
 }
@@ -345,6 +385,10 @@ type meetingState struct {
 }
 
 func (d *Daemon) startMeeting(ctx context.Context) (*meetingState, error) {
+	return d.startMeetingWithPlatform(ctx, "")
+}
+
+func (d *Daemon) startMeetingWithPlatform(ctx context.Context, platform string) (*meetingState, error) {
 	var vadPath string
 	if d.modelStatus != nil {
 		vadPath = d.modelStatus.VADPath
@@ -407,9 +451,15 @@ func (d *Daemon) startMeeting(ctx context.Context) (*meetingState, error) {
 		sources = append(sources, "monitor")
 	}
 
+	title := fmt.Sprintf("Meeting %s", time.Now().Format("2006-01-02 15:04"))
+	if platform != "" {
+		title = fmt.Sprintf("%s Meeting %s", platform, time.Now().Format("2006-01-02 15:04"))
+	}
+
 	sess := &session.Session{
 		ID:        uuid.New().String(),
-		Title:     fmt.Sprintf("Meeting %s", time.Now().Format("2006-01-02 15:04")),
+		Title:     title,
+		Platform:  platform,
 		CreatedAt: time.Now(),
 		Sources:   sources,
 	}

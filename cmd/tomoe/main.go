@@ -12,6 +12,7 @@ import (
 	"github.com/sosuke-ai/tomoe-pc/internal/daemon"
 	"github.com/sosuke-ai/tomoe-pc/internal/gpu"
 	"github.com/sosuke-ai/tomoe-pc/internal/hotkey"
+	"github.com/sosuke-ai/tomoe-pc/internal/meeting"
 	"github.com/sosuke-ai/tomoe-pc/internal/models"
 	"github.com/sosuke-ai/tomoe-pc/internal/platform"
 	"github.com/sosuke-ai/tomoe-pc/internal/session"
@@ -131,6 +132,11 @@ func runStart(cmd *cobra.Command, args []string) error {
 			opts.Tracker = speaker.NewTracker(threshold)
 			defer emb.Close()
 		}
+	}
+
+	// Create meeting auto-detector (optional)
+	if cfg.Meeting.AutoDetect {
+		opts.Detector = meeting.NewDetector()
 	}
 
 	// Run daemon
