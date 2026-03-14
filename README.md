@@ -10,7 +10,8 @@ Local-first speech-to-text desktop application for Linux. Captures microphone an
 - **Automatic meeting detection** — PulseAudio monitoring detects when a meeting app uses both mic and speaker, auto-starts/stops recording with platform identification (Teams, Meet, Zoom, Webex, Slack)
 - **Session management** — save, load, export (Markdown, plain text, SRT), delete sessions with recorded audio (M4A), editable title and platform metadata
 - **GPU acceleration** — NVIDIA CUDA via ONNX Runtime with automatic CPU fallback
-- **25 languages** — automatic language detection via Parakeet TDT v3 INT8
+- **25+ languages** — Parakeet TDT v3 INT8 (25 European languages) + Bengali via Zipformer, with per-segment language detection via Whisper tiny
+- **Hotword boosting** — configurable hotwords file to fix misrecognitions (e.g., "claude", "haiku") via modified beam search
 - **System tray** — background operation with AppIndicator3 tray icon
 
 ## Quick Start
@@ -67,8 +68,9 @@ tomoe init                # Manual system detection + config generation + model 
 tomoe stop                # Stop daemon
 tomoe status              # Show daemon/system/model/GPU info
 tomoe transcribe <file>   # Transcribe audio file (WAV, FLAC, OGG)
-tomoe model download      # Force re-download model
-tomoe model status        # Show model info + integrity check
+tomoe model download                # Force re-download base models
+tomoe model download --multilingual # Download base + lang-id + Bengali models
+tomoe model status                  # Show model info + integrity check
 tomoe devices             # List audio input devices
 tomoe config              # Print current config
 ```
@@ -97,6 +99,14 @@ device = 'default'
 [transcription]
 gpu_enabled = true
 model_path = '~/.local/share/tomoe/models'
+decoding_method = 'greedy_search'  # or 'modified_beam_search' for hotwords
+hotwords_file = ''                 # path to hotwords.txt (one word/phrase per line)
+hotwords_score = 1.5               # boost score for hotwords
+
+[multilingual]
+enabled = false
+languages = ['en']        # add 'bn' for Bengali
+default_lang = 'en'
 
 [output]
 auto_paste = true
@@ -128,6 +138,7 @@ tomoe-pc/
 │   ├── daemon/             # CLI daemon orchestration
 │   ├── gpu/                # GPU detection
 │   ├── hotkey/             # Global hotkey (X11 key grabs)
+│   ├── langid/             # Spoken language identification (Whisper tiny)
 │   ├── live/               # Live transcription coordinator
 │   ├── meeting/            # Automatic meeting detection (PulseAudio cgo)
 │   ├── models/             # Model download and management
@@ -146,6 +157,8 @@ tomoe-pc/
 ```
 Go binary → cgo → sherpa-onnx C API → ONNX Runtime (CUDA EP / CPU EP)
   → Parakeet TDT 0.6B v3 INT8 (encoder + decoder + joiner, 25 languages)
+  → Whisper tiny INT8 (~98MB, language identification)
+  → Bengali Zipformer transducer (~87MB, streaming)
   → Silero VAD (~2MB)
   → 3D-Speaker embedding model (~25MB)
 ```
@@ -155,9 +168,9 @@ Go binary → cgo → sherpa-onnx C API → ONNX Runtime (CUDA EP / CPU EP)
 ```
 PulseAudio subscribe ──→ source-output + sink-input from same PID? ──→ MeetingStarted
                                                                               │
-Mic Capturer → StreamCapturer → VAD → Transcribe → Segment{speaker:"You"}    │
-                                                            │                 │
-Monitor Capturer → StreamCapturer → VAD → Embed → Cluster → Segment{speaker:"Person N"}
+Mic Capturer → StreamCapturer → VAD → Lang-ID → Route → Transcribe → Segment{speaker:"You",lang:"en"}
+                                                                          │
+Monitor Capturer → StreamCapturer → VAD → Lang-ID → Route → Embed → Cluster → Segment{speaker:"Person N",lang:"bn"}
                                             │                       │
                                       Transcribe              EventsEmit
                                                                     │
