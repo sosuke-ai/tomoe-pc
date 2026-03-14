@@ -229,6 +229,8 @@ func TestDownloadSkipsExistingModels(t *testing.T) {
 
 func createFakeModelFiles(t *testing.T, dir string) {
 	t.Helper()
+
+	// Parakeet model files
 	parakeetDir := filepath.Join(dir, ParakeetSubdir)
 	if err := os.MkdirAll(parakeetDir, 0o755); err != nil {
 		t.Fatal(err)
@@ -238,7 +240,23 @@ func createFakeModelFiles(t *testing.T, dir string) {
 			t.Fatal(err)
 		}
 	}
+
+	// Silero VAD
 	if err := os.WriteFile(filepath.Join(dir, SileroVADFile), []byte("fake"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	// Speaker embedding
+	if err := os.WriteFile(filepath.Join(dir, SpeakerEmbeddingFile), []byte("fake"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	// Pyannote segmentation
+	segDir := filepath.Join(dir, PyannoteSegmentationSubdir)
+	if err := os.MkdirAll(segDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(segDir, PyannoteSegmentationFile), []byte("fake"), 0o644); err != nil {
 		t.Fatal(err)
 	}
 }

@@ -28,6 +28,18 @@ type Status struct {
 	VADPath                  string
 	SpeakerEmbeddingPath     string
 	SpeakerSegmentationPath  string
+
+	// Language identification (Whisper tiny)
+	LangIDReady       bool
+	LangIDEncoderPath string
+	LangIDDecoderPath string
+
+	// Bengali Zipformer transducer (streaming)
+	BengaliReady       bool
+	BengaliEncoderPath string
+	BengaliDecoderPath string
+	BengaliJoinerPath  string
+	BengaliTokensPath  string
 }
 
 // Manager handles model download, extraction, and verification.
@@ -48,6 +60,8 @@ func (m *Manager) ModelDir() string {
 // Check inspects the model directory and reports what's present.
 func (m *Manager) Check() *Status {
 	parakeetDir := filepath.Join(m.modelDir, ParakeetSubdir)
+	whisperDir := filepath.Join(m.modelDir, WhisperTinySubdir)
+	bengaliDir := filepath.Join(m.modelDir, BengaliSubdir)
 
 	s := &Status{
 		ModelDir:                m.modelDir,
@@ -58,6 +72,12 @@ func (m *Manager) Check() *Status {
 		VADPath:                 filepath.Join(m.modelDir, SileroVADFile),
 		SpeakerEmbeddingPath:    filepath.Join(m.modelDir, SpeakerEmbeddingFile),
 		SpeakerSegmentationPath: filepath.Join(m.modelDir, PyannoteSegmentationSubdir, PyannoteSegmentationFile),
+		LangIDEncoderPath:       filepath.Join(whisperDir, WhisperTinyEncoderFile),
+		LangIDDecoderPath:       filepath.Join(whisperDir, WhisperTinyDecoderFile),
+		BengaliEncoderPath:      filepath.Join(bengaliDir, bengaliEncoderFile),
+		BengaliDecoderPath:      filepath.Join(bengaliDir, bengaliDecoderFile),
+		BengaliJoinerPath:       filepath.Join(bengaliDir, bengaliJoinerFile),
+		BengaliTokensPath:       filepath.Join(bengaliDir, bengaliTokensFile),
 	}
 
 	files := []string{s.EncoderPath, s.DecoderPath, s.JoinerPath, s.TokensPath}
@@ -65,6 +85,8 @@ func (m *Manager) Check() *Status {
 	s.VADReady = fileExists(s.VADPath)
 	s.SpeakerEmbeddingReady = fileExists(s.SpeakerEmbeddingPath)
 	s.SpeakerSegmentationReady = fileExists(s.SpeakerSegmentationPath)
+	s.LangIDReady = allFilesExist(s.LangIDEncoderPath, s.LangIDDecoderPath)
+	s.BengaliReady = allFilesExist(s.BengaliEncoderPath, s.BengaliDecoderPath, s.BengaliJoinerPath, s.BengaliTokensPath)
 
 	// Detect partial download (some files exist but not all)
 	if !s.ParakeetReady {
@@ -88,6 +110,11 @@ func (s *Status) Ready() bool {
 // DiarizationReady reports whether speaker diarization models are present.
 func (s *Status) DiarizationReady() bool {
 	return s.SpeakerEmbeddingReady && s.SpeakerSegmentationReady
+}
+
+// MultilingualReady reports whether lang-id and Bengali models are present.
+func (s *Status) MultilingualReady() bool {
+	return s.LangIDReady && s.BengaliReady
 }
 
 // String returns a human-readable summary.
@@ -114,8 +141,20 @@ func (s *Status) String() string {
 	if s.DiarizationReady() {
 		diarization = "ready"
 	}
-	return fmt.Sprintf("Model dir: %s\nParakeet TDT INT8: %s\nSilero VAD: %s\nSpeaker Embedding: %s\nSpeaker Segmentation: %s\nDiarization: %s",
-		s.ModelDir, parakeet, vad, speaker, segmentation, diarization)
+	langID := "not downloaded"
+	if s.LangIDReady {
+		langID = "ready"
+	}
+	bengali := "not downloaded"
+	if s.BengaliReady {
+		bengali = "ready"
+	}
+	multilingual := "not ready"
+	if s.MultilingualReady() {
+		multilingual = "ready"
+	}
+	return fmt.Sprintf("Model dir: %s\nParakeet TDT INT8: %s\nSilero VAD: %s\nSpeaker Embedding: %s\nSpeaker Segmentation: %s\nDiarization: %s\nLang-ID (Whisper tiny): %s\nBengali Zipformer: %s\nMultilingual: %s",
+		s.ModelDir, parakeet, vad, speaker, segmentation, diarization, langID, bengali, multilingual)
 }
 
 // Download downloads and extracts all required models.
@@ -207,6 +246,46 @@ func (m *Manager) DownloadSpeakerModel(force bool) error {
 		return fmt.Errorf("downloading speaker embedding model: %w", err)
 	}
 	fmt.Println("Speaker embedding model downloaded.")
+	return nil
+}
+
+// DownloadMultilingual downloads language identification and Bengali models.
+// If force is true, re-downloads even if already present.
+func (m *Manager) DownloadMultilingual(force bool) error {
+	if err := os.MkdirAll(m.modelDir, 0o755); err != nil {
+		return fmt.Errorf("creating model directory: %w", err)
+	}
+
+	status := m.Check()
+
+	// Download Whisper tiny for language identification
+	if force || !status.LangIDReady {
+		fmt.Println("Downloading Whisper tiny model for language identification...")
+		if err := m.downloadAndExtractArchive(WhisperTinyArchiveURL); err != nil {
+			return fmt.Errorf("downloading Whisper tiny model: %w", err)
+		}
+		fmt.Println("Whisper tiny model downloaded and extracted.")
+	} else {
+		fmt.Println("Whisper tiny model already present, skipping.")
+	}
+
+	// Download Bengali Zipformer transducer
+	if force || !status.BengaliReady {
+		fmt.Println("Downloading Bengali Zipformer model...")
+		if err := m.downloadAndExtractArchive(BengaliArchiveURL); err != nil {
+			return fmt.Errorf("downloading Bengali model: %w", err)
+		}
+		fmt.Println("Bengali Zipformer model downloaded and extracted.")
+	} else {
+		fmt.Println("Bengali Zipformer model already present, skipping.")
+	}
+
+	// Verify
+	final := m.Check()
+	if !final.MultilingualReady() {
+		return fmt.Errorf("multilingual model verification failed after download")
+	}
+
 	return nil
 }
 

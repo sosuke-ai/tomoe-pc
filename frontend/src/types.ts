@@ -77,5 +77,7 @@ export interface ModelStatus {
   ParakeetReady: boolean;
   VADReady: boolean;
   SpeakerEmbeddingReady: boolean;
+  LangIDReady: boolean;
+  BengaliReady: boolean;
   ModelDir: string;
 }

@@ -28,6 +28,32 @@ const (
 	// PyannoteSegmentationFile is the model file inside the extraction directory.
 	PyannoteSegmentationFile = "model.onnx"
 
+	// ── Language identification (Whisper tiny multilingual, ~98MB) ──────
+
+	// WhisperTinyArchiveURL is the download URL for the Whisper tiny model archive (used for lang-id).
+	WhisperTinyArchiveURL = "https://github.com/k2-fsa/sherpa-onnx/releases/download/asr-models/sherpa-onnx-whisper-tiny.tar.bz2"
+
+	// WhisperTinySubdir is the directory name after extraction.
+	WhisperTinySubdir = "sherpa-onnx-whisper-tiny"
+
+	// WhisperTinyEncoderFile and WhisperTinyDecoderFile are the INT8 model files.
+	WhisperTinyEncoderFile = "tiny-encoder.int8.onnx"
+	WhisperTinyDecoderFile = "tiny-decoder.int8.onnx"
+
+	// ── Bengali Zipformer transducer (~87MB, streaming) ─────────────────
+
+	// BengaliArchiveURL is the download URL for the Bengali Zipformer model archive.
+	BengaliArchiveURL = "https://github.com/k2-fsa/sherpa-onnx/releases/download/asr-models/sherpa-onnx-streaming-zipformer-bn-vosk-2026-02-09.tar.bz2"
+
+	// BengaliSubdir is the directory name after extraction.
+	BengaliSubdir = "sherpa-onnx-streaming-zipformer-bn-vosk-2026-02-09"
+
+	// Bengali model files inside the extraction directory.
+	bengaliEncoderFile = "encoder.onnx"
+	bengaliDecoderFile = "decoder.onnx"
+	bengaliJoinerFile  = "joiner.onnx"
+	bengaliTokensFile  = "tokens.txt"
+
 	// Expected model files inside the Parakeet subdirectory.
 	encoderFile = "encoder.int8.onnx"
 	decoderFile = "decoder.int8.onnx"
