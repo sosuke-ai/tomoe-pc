@@ -117,14 +117,21 @@ func (a *App) Startup(ctx context.Context) {
 
 // Shutdown is called by Wails when the application is closing.
 func (a *App) Shutdown(ctx context.Context) {
-	if a.recording {
+	// Snapshot mutable fields under lock before acting on them.
+	a.mu.Lock()
+	recording := a.recording
+	dictCoord := a.dictCoordinator
+	dictCancel := a.dictCancel
+	a.mu.Unlock()
+
+	if recording {
 		_, _ = a.StopSession()
 	}
-	if a.dictCoordinator != nil {
-		a.dictCoordinator.Stop()
+	if dictCoord != nil {
+		dictCoord.Stop()
 	}
-	if a.dictCancel != nil {
-		a.dictCancel()
+	if dictCancel != nil {
+		dictCancel()
 	}
 	if a.engine != nil {
 		a.engine.Close()
