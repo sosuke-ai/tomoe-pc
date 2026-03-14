@@ -20,7 +20,8 @@ type Segment struct {
 	ID        string  `json:"id"`
 	Speaker   string  `json:"speaker"`
 	Text      string  `json:"text"`
-	StartTime float64 `json:"start_time"` // seconds from session start
-	EndTime   float64 `json:"end_time"`   // seconds from session start
-	Source    string  `json:"source"`     // "mic" or "monitor"
+	StartTime float64 `json:"start_time"`          // seconds from session start
+	EndTime   float64 `json:"end_time"`             // seconds from session start
+	Source    string  `json:"source"`               // "mic" or "monitor"
+	Language  string  `json:"language,omitempty"`    // ISO 639-1 code: "en", "bn", etc.
 }

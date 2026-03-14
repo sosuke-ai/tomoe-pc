@@ -5,6 +5,7 @@ export interface Segment {
   start_time: number;
   end_time: number;
   source: string;
+  language?: string;
 }
 
 export interface Session {
@@ -39,10 +40,19 @@ export interface Config {
   Transcription: {
     GPUEnabled: boolean;
     ModelPath: string;
+    HotwordsFile: string;
+    HotwordsScore: number;
+    DecodingMethod: string;
+    MaxActivePaths: number;
   };
   Output: {
     AutoPaste: boolean;
     Clipboard: boolean;
+  };
+  Multilingual: {
+    Enabled: boolean;
+    Languages: string[];
+    DefaultLang: string;
   };
   Meeting: {
     DefaultSources: string;

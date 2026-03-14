@@ -16,6 +16,7 @@ type Config struct {
 	Transcription TranscriptionConfig `toml:"transcription"`
 	Output        OutputConfig        `toml:"output"`
 	Meeting       MeetingConfig       `toml:"meeting"`
+	Multilingual  MultilingualConfig  `toml:"multilingual"`
 }
 
 // HotkeyConfig holds global hotkey settings.
@@ -31,8 +32,12 @@ type AudioConfig struct {
 
 // TranscriptionConfig holds transcription engine settings.
 type TranscriptionConfig struct {
-	GPUEnabled bool   `toml:"gpu_enabled"`
-	ModelPath  string `toml:"model_path"`
+	GPUEnabled     bool    `toml:"gpu_enabled"`
+	ModelPath      string  `toml:"model_path"`
+	HotwordsFile   string  `toml:"hotwords_file"`
+	HotwordsScore  float32 `toml:"hotwords_score"`
+	DecodingMethod string  `toml:"decoding_method"` // "greedy_search" or "modified_beam_search"
+	MaxActivePaths int     `toml:"max_active_paths"`
 }
 
 // OutputConfig holds output behavior settings.
@@ -40,6 +45,13 @@ type OutputConfig struct {
 	AutoPaste      bool    `toml:"auto_paste"`
 	Clipboard      bool    `toml:"clipboard"`
 	SilenceTimeout float64 `toml:"silence_timeout"` // auto-stop dictation after N seconds of silence (0=disabled)
+}
+
+// MultilingualConfig holds multilingual transcription settings.
+type MultilingualConfig struct {
+	Enabled     bool     `toml:"enabled"`
+	Languages   []string `toml:"languages"`    // e.g. ["en", "bn"]
+	DefaultLang string   `toml:"default_lang"` // fallback language: "en"
 }
 
 // MeetingConfig holds Phase 2 meeting transcription settings.
@@ -64,13 +76,21 @@ func DefaultConfig() *Config {
 			Device: "default",
 		},
 		Transcription: TranscriptionConfig{
-			GPUEnabled: false,
-			ModelPath:  ModelDir(),
+			GPUEnabled:     false,
+			ModelPath:      ModelDir(),
+			DecodingMethod: "greedy_search",
+			HotwordsScore:  1.5,
+			MaxActivePaths: 4,
 		},
 		Output: OutputConfig{
 			AutoPaste:      true,
 			Clipboard:      true,
 			SilenceTimeout: 5.0,
+		},
+		Multilingual: MultilingualConfig{
+			Enabled:     false,
+			Languages:   []string{"en"},
+			DefaultLang: "en",
 		},
 		Meeting: MeetingConfig{
 			DefaultSources:     "both",
