@@ -56,6 +56,7 @@ Mic Capturer → StreamCapturer → VAD → Transcribe → Segment
 - **Signal handler fix**: ONNX Runtime / WebKit install SIGSEGV handlers without `SA_ONSTACK`, crashing Go goroutines on alternate signal stacks. `sigfix.AfterSherpa()` patches this on every frontend-bound method call.
 - **Async session save**: `StopSession()` releases the mutex immediately, emits `session:stopped`, then runs MP3 encoding + session save in a background goroutine.
 - **VAD activity channel**: Coordinator exposes an `Activity()` channel signaled when `vad.IsSpeech()` returns true, used to reset the silence timer during continuous speech (not just on completed segments).
+- **PulseAudio meeting detection**: Simultaneous source-output (mic) + sink-input (speaker) from the same PID reliably indicates an active meeting. cgo bindings to libpulse (`#cgo pkg-config: libpulse`) follow the same pattern as `hotkey_linux.go`: static C globals, thread-locked event loop, `//export` callbacks. Platform identified via native app name or `xdotool` window title matching for browser-based meetings.
 
 ## Project Structure
 
@@ -73,10 +74,11 @@ tomoe-pc/
 │   ├── gpu/                # GPU detection, ONNX Runtime EP selection
 │   ├── hotkey/             # Global hotkey (X11 key grabs with lock-mask handling)
 │   ├── live/               # Live transcription coordinator + per-source pipelines
+│   ├── meeting/            # Automatic meeting detection via PulseAudio cgo bindings
 │   ├── models/             # Model download and management
 │   ├── notify/             # Desktop notifications (notify-send)
 │   ├── platform/           # Services aggregation layer
-│   ├── session/            # Session storage, export (MD/TXT/SRT), audio (MP3)
+│   ├── session/            # Session storage, export (MD/TXT/SRT), audio (M4A)
 │   ├── sigfix/             # ONNX Runtime / WebKit signal handler fix
 │   ├── speaker/            # Speaker embedding extraction + cosine clustering
 │   └── transcribe/         # sherpa-onnx / Parakeet TDT integration
@@ -132,6 +134,7 @@ make install-gpu      # Install CUDA toolkit + sherpa-onnx GPU libraries
 | `pelletier/go-toml` | Config file parsing (TOML) | No |
 | `google/uuid` | Session IDs | No |
 | `schollz/progressbar` | CLI progress bars | No |
+| `libpulse` (C) | PulseAudio meeting detection (cgo via pkg-config) | Yes |
 
 ## Configuration
 

@@ -7,7 +7,8 @@ Local-first speech-to-text desktop application for Linux. Captures microphone an
 - **CLI dictation mode** — global hotkey triggers mic capture, transcribes speech, pastes result into the focused window (detects terminals for Ctrl+Shift+V)
 - **Meeting transcription GUI** — Wails v2 desktop app with live scrolling transcript, mic + system audio capture, speaker identification, session management
 - **Speaker identification** — mic audio labeled "You", system audio speakers clustered via 3D-Speaker embeddings ("Person 1", "Person 2", etc.)
-- **Session management** — save, load, export (Markdown, plain text, SRT), delete sessions with recorded audio (MP3)
+- **Automatic meeting detection** — PulseAudio monitoring detects when a meeting app uses both mic and speaker, auto-starts/stops recording with platform identification (Teams, Meet, Zoom, Webex, Slack)
+- **Session management** — save, load, export (Markdown, plain text, SRT), delete sessions with recorded audio (M4A), editable title and platform metadata
 - **GPU acceleration** — NVIDIA CUDA via ONNX Runtime with automatic CPU fallback
 - **25 languages** — automatic language detection via Parakeet TDT v3 INT8
 - **System tray** — background operation with AppIndicator3 tray icon
@@ -38,7 +39,8 @@ make build
 - ONNX Runtime shared library (>=1.17.0) + sherpa-onnx C API
 - Node.js 18+ (for frontend)
 - `libwebkit2gtk-4.1-dev` (for GUI)
-- `xdotool`, `xprop` (for clipboard auto-paste on X11)
+- `libpulse-dev` (for PulseAudio meeting detection via cgo)
+- `xdotool`, `xprop` (for clipboard auto-paste and meeting platform identification on X11)
 
 ## Make Targets
 
@@ -108,6 +110,7 @@ speaker_threshold = 0.65
 max_speech_duration = 30.0
 min_silence_duration = 0.5
 auto_save = true
+auto_detect = true
 ```
 
 ## Architecture
@@ -126,6 +129,7 @@ tomoe-pc/
 │   ├── gpu/                # GPU detection
 │   ├── hotkey/             # Global hotkey (X11 key grabs)
 │   ├── live/               # Live transcription coordinator
+│   ├── meeting/            # Automatic meeting detection (PulseAudio cgo)
 │   ├── models/             # Model download and management
 │   ├── notify/             # Desktop notifications
 │   ├── platform/           # Services aggregation layer
@@ -149,8 +153,10 @@ Go binary → cgo → sherpa-onnx C API → ONNX Runtime (CUDA EP / CPU EP)
 ### Data Flow (Meeting Mode)
 
 ```
-Mic Capturer → StreamCapturer → VAD → Transcribe → Segment{speaker:"You"}
-                                                            │
+PulseAudio subscribe ──→ source-output + sink-input from same PID? ──→ MeetingStarted
+                                                                              │
+Mic Capturer → StreamCapturer → VAD → Transcribe → Segment{speaker:"You"}    │
+                                                            │                 │
 Monitor Capturer → StreamCapturer → VAD → Embed → Cluster → Segment{speaker:"Person N"}
                                             │                       │
                                       Transcribe              EventsEmit
@@ -164,7 +170,7 @@ Monitor Capturer → StreamCapturer → VAD → Embed → Cluster → Segment{sp
 |------|---------|
 | `~/.config/tomoe/config.toml` | Configuration |
 | `~/.local/share/tomoe/models/` | ONNX models |
-| `~/.local/share/tomoe/sessions/` | Saved sessions (JSON + MP3) |
+| `~/.local/share/tomoe/sessions/` | Saved sessions (JSON + M4A) |
 | `~/.local/share/tomoe/lib/` | GPU libraries (if installed) |
 
 ## License
