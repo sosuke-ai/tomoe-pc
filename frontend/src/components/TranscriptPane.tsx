@@ -48,6 +48,9 @@ export default function TranscriptPane({ segments, isRecording }: Props) {
           <span className={`speaker ${speakerClass(seg.speaker)}`}>
             {seg.speaker}:
           </span>
+          {seg.language && seg.language !== 'en' && (
+            <span className="lang-badge">{seg.language.toUpperCase()}</span>
+          )}
           <span className="text">{seg.text}</span>
         </div>
       ))}

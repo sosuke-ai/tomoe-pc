@@ -98,6 +98,18 @@ export default function SettingsPanel() {
               </span>
             </div>
             <div className="setting-row">
+              <label>Lang-ID (Whisper)</label>
+              <span className="value" style={{ color: modelStatus.LangIDReady ? '#4ec9b0' : 'var(--text-dim)' }}>
+                {modelStatus.LangIDReady ? 'Ready' : 'Not Downloaded'}
+              </span>
+            </div>
+            <div className="setting-row">
+              <label>Bengali Zipformer</label>
+              <span className="value" style={{ color: modelStatus.BengaliReady ? '#4ec9b0' : 'var(--text-dim)' }}>
+                {modelStatus.BengaliReady ? 'Ready' : 'Not Downloaded'}
+              </span>
+            </div>
+            <div className="setting-row">
               <label>Model Directory</label>
               <span className="value" style={{ fontSize: 11 }}>{modelStatus.ModelDir}</span>
             </div>
@@ -116,6 +128,24 @@ export default function SettingsPanel() {
             <div className="setting-row">
               <label>Meeting Toggle</label>
               <span className="value">{config.Hotkey?.MeetingBinding}</span>
+            </div>
+          </>
+        )}
+
+        <h3 style={{ marginTop: 16 }}>Multilingual</h3>
+        {config && (
+          <>
+            <div className="setting-row">
+              <label>Enabled</label>
+              <span className="value">{config.Multilingual?.Enabled ? 'Yes' : 'No'}</span>
+            </div>
+            <div className="setting-row">
+              <label>Languages</label>
+              <span className="value">{config.Multilingual?.Languages?.join(', ') || 'en'}</span>
+            </div>
+            <div className="setting-row">
+              <label>Default</label>
+              <span className="value">{config.Multilingual?.DefaultLang || 'en'}</span>
             </div>
           </>
         )}
