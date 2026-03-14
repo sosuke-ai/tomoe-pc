@@ -3,6 +3,7 @@ package backend
 import (
 	"context"
 	"fmt"
+	"path/filepath"
 	"sync"
 	"time"
 
@@ -290,7 +291,7 @@ func (a *App) StopSession() (*session.Session, error) {
 			}
 		}
 		if len(tracks) > 0 {
-			audioPath := config.SessionDir() + "/" + sess.ID + "/audio.m4a"
+			audioPath := filepath.Join(config.SessionDir(), sess.ID, "audio.m4a")
 			if err := session.SaveAudioM4A(tracks, 16000, audioPath); err == nil {
 				sess.AudioPath = audioPath
 			} else {

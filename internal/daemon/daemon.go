@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"sync"
 	"syscall"
 	"time"
@@ -515,7 +516,7 @@ func (d *Daemon) stopMeeting(ms *meetingState) {
 			}
 		}
 		if len(tracks) > 0 {
-			audioPath := config.SessionDir() + "/" + ms.session.ID + "/audio.m4a"
+			audioPath := filepath.Join(config.SessionDir(), ms.session.ID, "audio.m4a")
 			if err := session.SaveAudioM4A(tracks, 16000, audioPath); err == nil {
 				ms.session.AudioPath = audioPath
 			} else {

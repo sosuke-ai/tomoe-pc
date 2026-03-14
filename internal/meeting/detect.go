@@ -79,7 +79,9 @@ func (d *Detector) Events() <-chan MeetingEvent {
 // Start begins monitoring PulseAudio streams. Blocks until ctx is cancelled
 // or Stop() is called. Safe to call from a goroutine.
 func (d *Detector) Start(ctx context.Context) error {
+	d.mu.Lock()
 	ctx, d.cancel = context.WithCancel(ctx)
+	d.mu.Unlock()
 
 	if err := pulseInit(); err != nil {
 		return fmt.Errorf("PulseAudio init failed: %w", err)
@@ -97,7 +99,6 @@ func (d *Detector) Start(ctx context.Context) error {
 	go func() {
 		pulseEventLoop(ctx)
 		pulseCleanup()
-		setActiveDetector(nil)
 	}()
 
 	// Start periodic health check for tracked PIDs
@@ -109,12 +110,17 @@ func (d *Detector) Start(ctx context.Context) error {
 
 // Stop stops the detector and cleans up resources.
 func (d *Detector) Stop() {
+	// Clear active detector synchronously to prevent a stale goroutine
+	// from overwriting a future Start() call's setActiveDetector(d).
+	setActiveDetector(nil)
+
 	d.mu.Lock()
 	d.stopped = true
+	cancel := d.cancel
 	d.mu.Unlock()
 
-	if d.cancel != nil {
-		d.cancel()
+	if cancel != nil {
+		cancel()
 	}
 }
 
@@ -192,21 +198,30 @@ func (d *Detector) checkForMeeting() {
 				d.mu.Unlock()
 
 				fmt.Printf("meeting: detected %s meeting (PID %d)\n", platform, so.PID)
-				d.events <- MeetingEvent{Type: MeetingStarted, Platform: platform}
+				select {
+				case d.events <- MeetingEvent{Type: MeetingStarted, Platform: platform}:
+				default:
+					fmt.Println("meeting: event channel full, dropping start event")
+				}
 				return
 			}
 
-			if d.pendingPID != so.PID {
-				// New potential meeting — start debounce
+			if d.pendingPID == 0 || d.pendingPID != so.PID {
+				// New potential meeting — start debounce.
+				// Only schedule a goroutine if no pending PID exists.
+				// If a different PID appears, update the pending state
+				// but let the existing goroutine handle the recheck.
+				needSchedule := d.pendingPID == 0
 				d.pendingPID = so.PID
 				d.pendingTime = now
 				d.mu.Unlock()
 
-				// Schedule debounce check
-				go func() {
-					time.Sleep(debounceDelay)
-					d.checkForMeeting()
-				}()
+				if needSchedule {
+					go func() {
+						time.Sleep(debounceDelay)
+						d.checkForMeeting()
+					}()
+				}
 				return
 			}
 
@@ -247,7 +262,11 @@ func (d *Detector) checkForMeetingEnd() {
 	d.mu.Unlock()
 
 	fmt.Printf("meeting: %s meeting ended (PID %d)\n", platform, trackedPID)
-	d.events <- MeetingEvent{Type: MeetingStopped, Platform: platform}
+	select {
+	case d.events <- MeetingEvent{Type: MeetingStopped, Platform: platform}:
+	default:
+		fmt.Println("meeting: event channel full, dropping stop event")
+	}
 }
 
 // healthCheckLoop periodically verifies the tracked meeting PID still exists.

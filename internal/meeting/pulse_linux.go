@@ -202,6 +202,10 @@ func setActiveDetector(d *Detector) {
 // We collect items into slices and signal completion via channels.
 
 var (
+	// pulseQueryMu serializes all PA info queries to prevent concurrent
+	// callers from racing on the global collector state.
+	pulseQueryMu sync.Mutex
+
 	sinkInputMu      sync.Mutex
 	sinkInputItems   []streamInfo
 	sinkInputDone    = make(chan struct{}, 1)
@@ -301,11 +305,13 @@ func pulseEventLoop(ctx context.Context) {
 			fmt.Println("meeting: PulseAudio event loop stopping")
 			return
 		default:
-			ret := C.pulse_iterate_once(0) // non-blocking
-			if ret < 0 {
-				fmt.Println("meeting: PulseAudio mainloop error, stopping")
-				return
-			}
+		}
+		// Block in PA mainloop until an event arrives. This avoids
+		// busy-spinning at 100% CPU with non-blocking iterate(0).
+		ret := C.pulse_iterate_once(1)
+		if ret < 0 {
+			fmt.Println("meeting: PulseAudio mainloop error, stopping")
+			return
 		}
 	}
 }
@@ -313,6 +319,9 @@ func pulseEventLoop(ctx context.Context) {
 // pulseListSinkInputs requests sink-input info and waits for results.
 // Must NOT be called from the PulseAudio event loop thread.
 func pulseListSinkInputs() []streamInfo {
+	pulseQueryMu.Lock()
+	defer pulseQueryMu.Unlock()
+
 	sinkInputMu.Lock()
 	sinkInputItems = nil
 	sinkInputMu.Unlock()
@@ -341,6 +350,9 @@ func pulseListSinkInputs() []streamInfo {
 // pulseListSourceOutputs requests source-output info and waits for results.
 // Must NOT be called from the PulseAudio event loop thread.
 func pulseListSourceOutputs() []streamInfo {
+	pulseQueryMu.Lock()
+	defer pulseQueryMu.Unlock()
+
 	sourceOutputMu.Lock()
 	sourceOutputItems = nil
 	sourceOutputMu.Unlock()
