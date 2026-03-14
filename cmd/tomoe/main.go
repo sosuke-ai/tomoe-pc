@@ -83,15 +83,15 @@ func runStart(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("models not downloaded (run 'tomoe init' or 'tomoe model download')")
 	}
 
-	// Create transcription engine
-	engine, err := transcribe.NewEngine(transcribe.Config{
+	// Create transcription engine (multilingual if configured)
+	engine, err := transcribe.NewEngineFromConfig(transcribe.Config{
 		EncoderPath: status.EncoderPath,
 		DecoderPath: status.DecoderPath,
 		JoinerPath:  status.JoinerPath,
 		TokensPath:  status.TokensPath,
 		VADPath:     status.VADPath,
 		UseGPU:      cfg.Transcription.GPUEnabled,
-	})
+	}, status, &cfg.Multilingual)
 	if err != nil {
 		return fmt.Errorf("creating transcription engine: %w", err)
 	}
@@ -357,15 +357,15 @@ var transcribeCmd = &cobra.Command{
 		gpuInfo := gpu.Detect()
 		useGPU := gpuInfo.Available && gpuInfo.Sufficient
 
-		// Create transcription engine
-		engine, err := transcribe.NewEngine(transcribe.Config{
+		// Create transcription engine (multilingual if configured)
+		engine, err := transcribe.NewEngineFromConfig(transcribe.Config{
 			EncoderPath: status.EncoderPath,
 			DecoderPath: status.DecoderPath,
 			JoinerPath:  status.JoinerPath,
 			TokensPath:  status.TokensPath,
 			VADPath:     status.VADPath,
 			UseGPU:      useGPU,
-		})
+		}, status, &cfg.Multilingual)
 		if err != nil {
 			return fmt.Errorf("creating transcription engine: %w", err)
 		}

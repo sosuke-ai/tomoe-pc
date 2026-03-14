@@ -82,14 +82,14 @@ func (a *App) Startup(ctx context.Context) {
 
 	// Create transcription engine if models are ready
 	if status.Ready() {
-		engine, err := transcribe.NewEngine(transcribe.Config{
+		engine, err := transcribe.NewEngineFromConfig(transcribe.Config{
 			EncoderPath: status.EncoderPath,
 			DecoderPath: status.DecoderPath,
 			JoinerPath:  status.JoinerPath,
 			TokensPath:  status.TokensPath,
 			VADPath:     status.VADPath,
 			UseGPU:      cfg.Transcription.GPUEnabled,
-		})
+		}, status, &cfg.Multilingual)
 		if err == nil {
 			a.engine = engine
 		}

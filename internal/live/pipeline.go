@@ -113,6 +113,7 @@ func (c *Coordinator) drainVAD(vad *sherpa.VoiceActivityDetector, source SourceT
 			StartTime: startTime,
 			EndTime:   endTime,
 			Source:    string(source),
+			Language:  result.Language,
 		}
 
 		// Emit segment (non-blocking)
