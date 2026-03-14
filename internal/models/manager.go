@@ -15,8 +15,8 @@ import (
 
 // Status describes the state of downloaded models.
 type Status struct {
-	ParakeetReady         bool
-	VADReady              bool
+	ParakeetReady            bool
+	VADReady                 bool
 	SpeakerEmbeddingReady    bool
 	SpeakerSegmentationReady bool
 	ParakeetPartial          bool // some but not all Parakeet files present
@@ -50,12 +50,12 @@ func (m *Manager) Check() *Status {
 	parakeetDir := filepath.Join(m.modelDir, ParakeetSubdir)
 
 	s := &Status{
-		ModelDir:             m.modelDir,
-		EncoderPath:          filepath.Join(parakeetDir, encoderFile),
-		DecoderPath:          filepath.Join(parakeetDir, decoderFile),
-		JoinerPath:           filepath.Join(parakeetDir, joinerFile),
-		TokensPath:           filepath.Join(parakeetDir, tokensFile),
-		VADPath:              filepath.Join(m.modelDir, SileroVADFile),
+		ModelDir:                m.modelDir,
+		EncoderPath:             filepath.Join(parakeetDir, encoderFile),
+		DecoderPath:             filepath.Join(parakeetDir, decoderFile),
+		JoinerPath:              filepath.Join(parakeetDir, joinerFile),
+		TokensPath:              filepath.Join(parakeetDir, tokensFile),
+		VADPath:                 filepath.Join(m.modelDir, SileroVADFile),
 		SpeakerEmbeddingPath:    filepath.Join(m.modelDir, SpeakerEmbeddingFile),
 		SpeakerSegmentationPath: filepath.Join(m.modelDir, PyannoteSegmentationSubdir, PyannoteSegmentationFile),
 	}

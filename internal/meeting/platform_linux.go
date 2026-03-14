@@ -10,15 +10,15 @@ import (
 // knownBrowserBinaries maps browser application names (as reported by PulseAudio)
 // to their xdotool WM class names for window title lookup.
 var knownBrowserBinaries = map[string]bool{
-	"Google Chrome":       true,
-	"Google Chrome input": true,
-	"Chromium":            true,
-	"Chromium input":      true,
-	"Firefox":             true,
-	"Firefox input":       true,
-	"Brave Browser":       true,
-	"Brave Browser input": true,
-	"Microsoft Edge":      true,
+	"Google Chrome":        true,
+	"Google Chrome input":  true,
+	"Chromium":             true,
+	"Chromium input":       true,
+	"Firefox":              true,
+	"Firefox input":        true,
+	"Brave Browser":        true,
+	"Brave Browser input":  true,
+	"Microsoft Edge":       true,
 	"Microsoft Edge input": true,
 }
 

@@ -213,10 +213,10 @@ var (
 	// callers from racing on the global collector state.
 	pulseQueryMu sync.Mutex
 
-	sinkInputMu      sync.Mutex
-	sinkInputItems   []streamInfo
-	sinkInputDone    = make(chan struct{}, 1)
-	sourceOutputMu   sync.Mutex
+	sinkInputMu       sync.Mutex
+	sinkInputItems    []streamInfo
+	sinkInputDone     = make(chan struct{}, 1)
+	sourceOutputMu    sync.Mutex
 	sourceOutputItems []streamInfo
 	sourceOutputDone  = make(chan struct{}, 1)
 )
