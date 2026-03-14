@@ -376,6 +376,25 @@ func (a *App) ExportSession(id, format string) (string, error) {
 	return string(buf), nil
 }
 
+// UpdateSession updates a session's title and/or platform.
+func (a *App) UpdateSession(id, title, platform string) error {
+	a.fixSignals()
+	if a.store == nil {
+		return fmt.Errorf("session store not initialized")
+	}
+	sess, err := a.store.Load(id)
+	if err != nil {
+		return err
+	}
+	if title != "" {
+		sess.Title = title
+	}
+	if platform != "" {
+		sess.Platform = platform
+	}
+	return a.store.Save(sess)
+}
+
 // DeleteSession deletes a session by ID.
 func (a *App) DeleteSession(id string) error {
 	a.fixSignals()

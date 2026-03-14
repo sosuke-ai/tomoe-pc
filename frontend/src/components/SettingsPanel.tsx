@@ -135,6 +135,10 @@ export default function SettingsPanel() {
               <label>Auto-Save</label>
               <span className="value">{config.Meeting?.AutoSave ? 'Yes' : 'No'}</span>
             </div>
+            <div className="setting-row">
+              <label>Auto-Detect</label>
+              <span className="value">{config.Meeting?.AutoDetect ? 'Yes' : 'No'}</span>
+            </div>
           </>
         )}
       </div>

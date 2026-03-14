@@ -10,6 +10,7 @@ export interface Segment {
 export interface Session {
   id: string;
   title: string;
+  platform?: string;
   created_at: string;
   ended_at?: string;
   duration: number;
@@ -50,6 +51,7 @@ export interface Config {
     MaxSpeechDuration: number;
     MinSilenceDuration: number;
     AutoSave: boolean;
+    AutoDetect: boolean;
   };
 }
 

@@ -18,6 +18,7 @@ interface Window {
         GetSessionList(): Promise<any[]>;
         LoadSession(id: string): Promise<any>;
         ExportSession(id: string, format: string): Promise<string>;
+        UpdateSession(id: string, title: string, platform: string): Promise<void>;
         DeleteSession(id: string): Promise<void>;
         GetConfig(): Promise<any>;
         GetGPUInfo(): Promise<any>;

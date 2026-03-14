@@ -12,9 +12,44 @@ function formatDuration(seconds: number): string {
   return `${m}m${s.toString().padStart(2, '0')}s`;
 }
 
+const platformColors: Record<string, string> = {
+  Teams: '#4b53bc',
+  Meet: '#00897b',
+  Zoom: '#2d8cff',
+  Webex: '#07c160',
+  Slack: '#611f69',
+};
+
+const platformOptions = ['', 'Teams', 'Meet', 'Zoom', 'Webex', 'Slack', 'Unknown'];
+
+function PlatformBadge({ platform }: { platform?: string }) {
+  if (!platform || platform === 'Unknown') return null;
+  const bg = platformColors[platform] || '#555';
+  return (
+    <span
+      style={{
+        display: 'inline-block',
+        fontSize: 10,
+        fontWeight: 600,
+        padding: '1px 6px',
+        borderRadius: 3,
+        backgroundColor: bg,
+        color: '#fff',
+        marginLeft: 6,
+        verticalAlign: 'middle',
+      }}
+    >
+      {platform}
+    </span>
+  );
+}
+
 export default function SessionList({ onExport }: Props) {
   const [sessions, setSessions] = useState<Session[]>([]);
   const [expandedId, setExpandedId] = useState<string | null>(null);
+  const [editingId, setEditingId] = useState<string | null>(null);
+  const [editTitle, setEditTitle] = useState('');
+  const [editPlatform, setEditPlatform] = useState('');
 
   useEffect(() => {
     loadSessions();
@@ -48,6 +83,31 @@ export default function SessionList({ onExport }: Props) {
     }
   }
 
+  function startEditing(sess: Session, e: React.MouseEvent) {
+    e.stopPropagation();
+    setEditingId(sess.id);
+    setEditTitle(sess.title);
+    setEditPlatform(sess.platform || '');
+  }
+
+  async function saveEdit(id: string) {
+    try {
+      await window.go.backend.App.UpdateSession(id, editTitle, editPlatform);
+      setSessions(prev =>
+        prev.map(s =>
+          s.id === id ? { ...s, title: editTitle, platform: editPlatform || undefined } : s
+        )
+      );
+    } catch (e) {
+      console.error('Failed to update session:', e);
+    }
+    setEditingId(null);
+  }
+
+  function cancelEdit() {
+    setEditingId(null);
+  }
+
   function toggleExpand(id: string) {
     setExpandedId(expandedId === id ? null : id);
   }
@@ -67,6 +127,7 @@ export default function SessionList({ onExport }: Props) {
         <div className="session-list">
           {sessions.map(sess => {
             const isExpanded = sess.id === expandedId;
+            const isEditing = sess.id === editingId;
             return (
               <div key={sess.id} className={`accordion-item ${isExpanded ? 'expanded' : ''}`}>
                 <div
@@ -75,14 +136,90 @@ export default function SessionList({ onExport }: Props) {
                 >
                   <div className="accordion-chevron">{isExpanded ? '\u25BC' : '\u25B6'}</div>
                   <div className="accordion-info">
-                    <div className="session-title">{sess.title}</div>
-                    <div className="session-meta">
-                      {new Date(sess.created_at).toLocaleDateString()} &middot;{' '}
-                      {formatDuration(sess.duration)} &middot;{' '}
-                      {sess.segments?.length || 0} segments
-                    </div>
+                    {isEditing ? (
+                      <div
+                        style={{ display: 'flex', flexDirection: 'column', gap: 4 }}
+                        onClick={e => e.stopPropagation()}
+                      >
+                        <input
+                          type="text"
+                          value={editTitle}
+                          onChange={e => setEditTitle(e.target.value)}
+                          onKeyDown={e => {
+                            if (e.key === 'Enter') saveEdit(sess.id);
+                            if (e.key === 'Escape') cancelEdit();
+                          }}
+                          autoFocus
+                          style={{
+                            background: 'var(--bg-secondary)',
+                            border: '1px solid var(--border)',
+                            color: 'var(--text)',
+                            borderRadius: 3,
+                            padding: '2px 6px',
+                            fontSize: 13,
+                          }}
+                        />
+                        <div style={{ display: 'flex', gap: 6, alignItems: 'center' }}>
+                          <select
+                            value={editPlatform}
+                            onChange={e => setEditPlatform(e.target.value)}
+                            style={{
+                              background: 'var(--bg-secondary)',
+                              border: '1px solid var(--border)',
+                              color: 'var(--text)',
+                              borderRadius: 3,
+                              padding: '2px 4px',
+                              fontSize: 11,
+                            }}
+                          >
+                            {platformOptions.map(p => (
+                              <option key={p} value={p}>
+                                {p || '(none)'}
+                              </option>
+                            ))}
+                          </select>
+                          <button
+                            className="btn btn-secondary btn-sm"
+                            onClick={() => saveEdit(sess.id)}
+                            style={{ fontSize: 11, padding: '1px 8px' }}
+                          >
+                            Save
+                          </button>
+                          <button
+                            className="btn btn-secondary btn-sm"
+                            onClick={cancelEdit}
+                            style={{ fontSize: 11, padding: '1px 8px' }}
+                          >
+                            Cancel
+                          </button>
+                        </div>
+                      </div>
+                    ) : (
+                      <>
+                        <div className="session-title">
+                          {sess.title}
+                          <PlatformBadge platform={sess.platform} />
+                        </div>
+                        <div className="session-meta">
+                          {new Date(sess.created_at).toLocaleDateString()}
+                          {sess.platform && sess.platform !== 'Unknown' && (
+                            <> &middot; {sess.platform}</>
+                          )}
+                          {' '}&middot; {formatDuration(sess.duration)}
+                          {' '}&middot; {sess.segments?.length || 0} segments
+                        </div>
+                      </>
+                    )}
                   </div>
                   <div className="accordion-actions">
+                    {!isEditing && (
+                      <button
+                        className="btn btn-secondary btn-sm"
+                        onClick={(e) => startEditing(sess, e)}
+                      >
+                        Edit
+                      </button>
+                    )}
                     <button
                       className="btn btn-secondary btn-sm"
                       onClick={(e) => { e.stopPropagation(); onExport(sess.id); }}
