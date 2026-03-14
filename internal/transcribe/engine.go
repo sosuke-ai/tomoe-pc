@@ -28,11 +28,15 @@ type Engine interface {
 
 // Config holds paths and settings for creating an Engine.
 type Config struct {
-	EncoderPath string
-	DecoderPath string
-	JoinerPath  string
-	TokensPath  string
-	VADPath     string
-	UseGPU      bool
-	NumThreads  int
+	EncoderPath    string
+	DecoderPath    string
+	JoinerPath     string
+	TokensPath     string
+	VADPath        string
+	UseGPU         bool
+	NumThreads     int
+	DecodingMethod string  // "greedy_search" or "modified_beam_search"
+	MaxActivePaths int     // used with modified_beam_search
+	HotwordsFile   string  // path to hotwords file (one word/phrase per line)
+	HotwordsScore  float32 // boost score for hotwords (e.g. 1.5)
 }

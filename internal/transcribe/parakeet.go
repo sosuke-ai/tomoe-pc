@@ -31,6 +31,11 @@ func NewEngine(cfg Config) (Engine, error) {
 		numThreads = 1
 	}
 
+	decodingMethod := "greedy_search"
+	if cfg.DecodingMethod != "" {
+		decodingMethod = cfg.DecodingMethod
+	}
+
 	recognizerConfig := &sherpa.OfflineRecognizerConfig{
 		FeatConfig: sherpa.FeatureConfig{
 			SampleRate: sampleRate,
@@ -47,7 +52,10 @@ func NewEngine(cfg Config) (Engine, error) {
 			Provider:   provider,
 			ModelType:  "nemo_transducer",
 		},
-		DecodingMethod: "greedy_search",
+		DecodingMethod: decodingMethod,
+		MaxActivePaths: cfg.MaxActivePaths,
+		HotwordsFile:   cfg.HotwordsFile,
+		HotwordsScore:  cfg.HotwordsScore,
 	}
 
 	recognizer := sherpa.NewOfflineRecognizer(recognizerConfig)

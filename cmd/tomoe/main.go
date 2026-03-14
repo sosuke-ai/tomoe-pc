@@ -85,12 +85,16 @@ func runStart(cmd *cobra.Command, args []string) error {
 
 	// Create transcription engine (multilingual if configured)
 	engine, err := transcribe.NewEngineFromConfig(transcribe.Config{
-		EncoderPath: status.EncoderPath,
-		DecoderPath: status.DecoderPath,
-		JoinerPath:  status.JoinerPath,
-		TokensPath:  status.TokensPath,
-		VADPath:     status.VADPath,
-		UseGPU:      cfg.Transcription.GPUEnabled,
+		EncoderPath:    status.EncoderPath,
+		DecoderPath:    status.DecoderPath,
+		JoinerPath:     status.JoinerPath,
+		TokensPath:     status.TokensPath,
+		VADPath:        status.VADPath,
+		UseGPU:         cfg.Transcription.GPUEnabled,
+		DecodingMethod: cfg.Transcription.DecodingMethod,
+		MaxActivePaths: cfg.Transcription.MaxActivePaths,
+		HotwordsFile:   cfg.Transcription.HotwordsFile,
+		HotwordsScore:  cfg.Transcription.HotwordsScore,
 	}, status, &cfg.Multilingual)
 	if err != nil {
 		return fmt.Errorf("creating transcription engine: %w", err)
@@ -359,12 +363,16 @@ var transcribeCmd = &cobra.Command{
 
 		// Create transcription engine (multilingual if configured)
 		engine, err := transcribe.NewEngineFromConfig(transcribe.Config{
-			EncoderPath: status.EncoderPath,
-			DecoderPath: status.DecoderPath,
-			JoinerPath:  status.JoinerPath,
-			TokensPath:  status.TokensPath,
-			VADPath:     status.VADPath,
-			UseGPU:      useGPU,
+			EncoderPath:    status.EncoderPath,
+			DecoderPath:    status.DecoderPath,
+			JoinerPath:     status.JoinerPath,
+			TokensPath:     status.TokensPath,
+			VADPath:        status.VADPath,
+			UseGPU:         useGPU,
+			DecodingMethod: cfg.Transcription.DecodingMethod,
+			MaxActivePaths: cfg.Transcription.MaxActivePaths,
+			HotwordsFile:   cfg.Transcription.HotwordsFile,
+			HotwordsScore:  cfg.Transcription.HotwordsScore,
 		}, status, &cfg.Multilingual)
 		if err != nil {
 			return fmt.Errorf("creating transcription engine: %w", err)
