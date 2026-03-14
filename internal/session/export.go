@@ -18,10 +18,19 @@ func ExportMarkdown(sess *Session, w io.Writer) error {
 		return err
 	}
 
-	_, err = fmt.Fprintf(w, "**Duration:** %s\n\n", formatDuration(sess.Duration))
+	_, err = fmt.Fprintf(w, "**Duration:** %s\n", formatDuration(sess.Duration))
 	if err != nil {
 		return err
 	}
+
+	if sess.Platform != "" {
+		_, err = fmt.Fprintf(w, "**Platform:** %s\n", sess.Platform)
+		if err != nil {
+			return err
+		}
+	}
+
+	_, _ = fmt.Fprint(w, "\n")
 
 	for _, seg := range sess.Segments {
 		_, err = fmt.Fprintf(w, "**[%s] %s:** %s\n\n",
@@ -46,10 +55,19 @@ func ExportPlainText(sess *Session, w io.Writer) error {
 		return err
 	}
 
-	_, err = fmt.Fprintf(w, "Duration: %s\n\n", formatDuration(sess.Duration))
+	_, err = fmt.Fprintf(w, "Duration: %s\n", formatDuration(sess.Duration))
 	if err != nil {
 		return err
 	}
+
+	if sess.Platform != "" {
+		_, err = fmt.Fprintf(w, "Platform: %s\n", sess.Platform)
+		if err != nil {
+			return err
+		}
+	}
+
+	_, _ = fmt.Fprint(w, "\n")
 
 	for _, seg := range sess.Segments {
 		_, err = fmt.Fprintf(w, "[%s] %s: %s\n",

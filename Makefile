@@ -19,7 +19,7 @@ HAS_WEBKIT := $(shell pkg-config --exists webkit2gtk-4.1 2>/dev/null && echo yes
 dev-deps: ## Install Ubuntu system packages needed for development
 	sudo apt install -y build-essential pkg-config \
 	  libx11-dev libxtst-dev libxkbcommon-dev \
-	  libasound-dev portaudio19-dev libportaudio2 libpulse-dev \
+	  libasound-dev portaudio19-dev libportaudio2 libpulse-dev pulseaudio-utils \
 	  xclip xdotool wl-clipboard wtype libnotify-bin ffmpeg \
 	  libwebkit2gtk-4.1-dev libappindicator3-dev libgtk-3-dev
 	@echo "Installing Node.js dependencies for frontend..."

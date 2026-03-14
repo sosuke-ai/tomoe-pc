@@ -97,6 +97,80 @@ func TestSessionEmptySegments(t *testing.T) {
 	}
 }
 
+func TestSessionPlatformRoundTrip(t *testing.T) {
+	now := time.Now().Truncate(time.Second)
+	sess := &Session{
+		ID:        "plat-1",
+		Title:     "Teams Meeting 2026-03-13 14:30",
+		Platform:  "Teams",
+		CreatedAt: now,
+		Duration:  600.0,
+		Sources:   []string{"mic", "monitor"},
+	}
+
+	data, err := json.Marshal(sess)
+	if err != nil {
+		t.Fatalf("Marshal error: %v", err)
+	}
+
+	var loaded Session
+	if err := json.Unmarshal(data, &loaded); err != nil {
+		t.Fatalf("Unmarshal error: %v", err)
+	}
+
+	if loaded.Platform != "Teams" {
+		t.Errorf("Platform = %q, want %q", loaded.Platform, "Teams")
+	}
+
+	// Verify platform appears in JSON
+	var m map[string]interface{}
+	if err := json.Unmarshal(data, &m); err != nil {
+		t.Fatalf("Unmarshal to map error: %v", err)
+	}
+	if _, ok := m["platform"]; !ok {
+		t.Error("missing JSON key \"platform\"")
+	}
+}
+
+func TestSessionBackwardCompatNoPlatform(t *testing.T) {
+	// Old session JSON without platform field
+	oldJSON := `{"id":"old-1","title":"Meeting","created_at":"2026-03-13T14:00:00Z","duration":300}`
+
+	var loaded Session
+	if err := json.Unmarshal([]byte(oldJSON), &loaded); err != nil {
+		t.Fatalf("Unmarshal error: %v", err)
+	}
+
+	if loaded.Platform != "" {
+		t.Errorf("Platform should be empty for old session, got %q", loaded.Platform)
+	}
+	if loaded.ID != "old-1" {
+		t.Errorf("ID = %q, want %q", loaded.ID, "old-1")
+	}
+}
+
+func TestSessionPlatformOmittedWhenEmpty(t *testing.T) {
+	sess := &Session{
+		ID:        "no-plat",
+		Title:     "Meeting",
+		CreatedAt: time.Now().Truncate(time.Second),
+	}
+
+	data, err := json.Marshal(sess)
+	if err != nil {
+		t.Fatalf("Marshal error: %v", err)
+	}
+
+	var m map[string]interface{}
+	if err := json.Unmarshal(data, &m); err != nil {
+		t.Fatalf("Unmarshal to map error: %v", err)
+	}
+
+	if _, ok := m["platform"]; ok {
+		t.Error("platform key should be omitted when empty")
+	}
+}
+
 func TestSegmentJSONFields(t *testing.T) {
 	seg := Segment{
 		ID:        "s1",

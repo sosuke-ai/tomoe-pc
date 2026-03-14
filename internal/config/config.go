@@ -50,6 +50,7 @@ type MeetingConfig struct {
 	MaxSpeechDuration  float64 `toml:"max_speech_duration"`  // seconds
 	MinSilenceDuration float64 `toml:"min_silence_duration"` // seconds
 	AutoSave           bool    `toml:"auto_save"`            // save session on stop
+	AutoDetect         bool    `toml:"auto_detect"`          // auto-detect meetings via PulseAudio
 }
 
 // DefaultConfig returns a Config with sensible defaults.
@@ -77,6 +78,7 @@ func DefaultConfig() *Config {
 			MaxSpeechDuration:  30.0,
 			MinSilenceDuration: 0.5,
 			AutoSave:           true,
+			AutoDetect:         true,
 		},
 	}
 }
