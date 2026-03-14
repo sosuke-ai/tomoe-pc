@@ -11,6 +11,7 @@ import (
 	"github.com/sosuke-ai/tomoe-pc/internal/clipboard"
 	"github.com/sosuke-ai/tomoe-pc/internal/hotkey"
 	"github.com/sosuke-ai/tomoe-pc/internal/live"
+	"github.com/sosuke-ai/tomoe-pc/internal/session"
 )
 
 // hotkeyManager manages the meeting hotkey in GUI mode.
@@ -199,78 +200,29 @@ func (dhk *dictationManager) startDictation() {
 	}
 	wailsRuntime.EventsEmit(dhk.app.ctx, "dictation:started", nil)
 
-	// Stream segments: transcribe → clipboard in real-time, auto-stop on silence
-	go dhk.streamSegments(coordinator, cancel)
-}
-
-func (dhk *dictationManager) streamSegments(coordinator *live.Coordinator, cancel context.CancelFunc) {
-	silenceTimeout := dhk.silenceTimeout()
-
-	// Wait for the first segment before starting the silence timer.
-	// The VAD needs time to detect the first speech boundary.
-	var timer *time.Timer
-	var timerCh <-chan time.Time // nil channel blocks forever in select
-
-	resetTimer := func() {
-		if timer == nil {
-			timer = time.NewTimer(silenceTimeout)
-			timerCh = timer.C
-		} else {
-			if !timer.Stop() {
-				select {
-				case <-timer.C:
-				default:
-				}
-			}
-			timer.Reset(silenceTimeout)
-		}
+	silenceTimeout := dhk.app.cfg.Output.SilenceTimeout
+	if silenceTimeout <= 0 {
+		silenceTimeout = 5.0
 	}
 
-	for {
-		select {
-		case seg, ok := <-coordinator.Segments():
-			if !ok {
-				return // channel closed (coordinator stopped)
-			}
-			resetTimer()
-
-			if dhk.app.cfg.Output.Clipboard {
-				if err := dhk.clip.Write(seg.Text); err != nil {
-					fmt.Printf("Dictation clipboard error: %v\n", err)
-				}
-			}
-			if dhk.app.cfg.Output.AutoPaste {
-				if err := dhk.clip.TypeText(seg.Text); err != nil {
-					fmt.Printf("Dictation auto-type error: %v\n", err)
-				}
-			}
-
+	streamer := live.NewDictationStreamer(coordinator, live.DictationConfig{
+		Clipboard:      dhk.clip,
+		UseClipboard:   dhk.app.cfg.Output.Clipboard,
+		AutoPaste:      dhk.app.cfg.Output.AutoPaste,
+		SilenceTimeout: time.Duration(silenceTimeout * float64(time.Second)),
+		OnSegment: func(seg session.Segment) {
 			wailsRuntime.EventsEmit(dhk.app.ctx, "dictation:segment", seg.Text)
-			fmt.Printf("[dictation] %s\n", seg.Text)
-
-		case <-coordinator.Activity():
-			// VAD detected ongoing speech — reset silence timer
-			resetTimer()
-
-		case <-timerCh:
-			// Silence timeout — auto-stop
-			fmt.Printf("Dictation auto-stopped after %.0fs of silence\n", silenceTimeout.Seconds())
+		},
+		OnAutoStop: func() {
 			wailsRuntime.EventsEmit(dhk.app.ctx, "dictation:done", "Auto-stopped (silence)")
 			dhk.stopDictation()
-			if timer != nil {
-				timer.Stop()
-			}
-			return
-		}
-	}
-}
+		},
+	})
 
-func (dhk *dictationManager) silenceTimeout() time.Duration {
-	t := dhk.app.cfg.Output.SilenceTimeout
-	if t <= 0 {
-		t = 5.0
-	}
-	return time.Duration(t * float64(time.Second))
+	// Watch for streamer completion (coordinator stopped externally)
+	go func() {
+		<-streamer.Done()
+	}()
 }
 
 func (dhk *dictationManager) stopDictation() {

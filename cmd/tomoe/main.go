@@ -241,6 +241,14 @@ var statusCmd = &cobra.Command{
 			fmt.Printf("  Model path:  %s\n", cfg.Transcription.ModelPath)
 			fmt.Printf("  Clipboard:   %v\n", cfg.Output.Clipboard)
 			fmt.Printf("  Auto-paste:  %v\n", cfg.Output.AutoPaste)
+			if cfg.Multilingual.Enabled {
+				fmt.Printf("  Multilingual: enabled (languages: %v, default: %s)\n",
+					cfg.Multilingual.Languages, cfg.Multilingual.DefaultLang)
+			}
+			if cfg.Transcription.DecodingMethod == "modified_beam_search" {
+				fmt.Printf("  Hotwords:    %s (score: %.1f)\n",
+					cfg.Transcription.HotwordsFile, cfg.Transcription.HotwordsScore)
+			}
 		} else {
 			fmt.Printf("Config: not found (run 'tomoe init')\n")
 		}
@@ -301,16 +309,38 @@ func init() {
 
 var modelDownloadCmd = &cobra.Command{
 	Use:   "download",
-	Short: "Download or re-download Parakeet TDT INT8 model and Silero VAD",
+	Short: "Download or re-download models (multilingual models auto-download when enabled in config)",
 	RunE: func(cmd *cobra.Command, args []string) error {
 		force, _ := cmd.Flags().GetBool("force")
+		multilingual, _ := cmd.Flags().GetBool("multilingual")
 		mgr := models.NewManager(config.ModelDir())
-		return mgr.Download(force)
+
+		if err := mgr.Download(force); err != nil {
+			return err
+		}
+
+		// Download multilingual models if enabled in config or explicitly requested
+		if !multilingual && config.Exists() {
+			cfg, err := config.Load(config.Path())
+			if err == nil && cfg.Multilingual.Enabled {
+				multilingual = true
+			}
+		}
+
+		if multilingual {
+			fmt.Println("\nDownloading multilingual models...")
+			if err := mgr.DownloadMultilingual(force); err != nil {
+				return err
+			}
+		}
+
+		return nil
 	},
 }
 
 func init() {
 	modelDownloadCmd.Flags().Bool("force", false, "Force re-download even if models exist")
+	modelDownloadCmd.Flags().Bool("multilingual", false, "Download language identification and Bengali models (auto-detected from config)")
 }
 
 var modelStatusCmd = &cobra.Command{

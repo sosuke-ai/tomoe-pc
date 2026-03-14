@@ -24,25 +24,26 @@ func NewEngineFromConfig(cfg Config, status *models.Status, multiCfg *config.Mul
 		return parakeet, nil
 	}
 
+	// Build per-language engine map
+	defaultLang := multiCfg.DefaultLang
+	if defaultLang == "" {
+		defaultLang = "en"
+	}
+
 	// Check if lang-id models are available
 	if !status.LangIDReady {
 		fmt.Println("Warning: multilingual enabled but lang-id models not downloaded, using Parakeet only")
 		return parakeet, nil
 	}
 
-	// Create language identifier
-	identifier, err := langid.NewIdentifier(status.LangIDEncoderPath, status.LangIDDecoderPath)
+	// Create language identifier constrained to configured languages
+	identifier, err := langid.NewIdentifier(status.LangIDEncoderPath, status.LangIDDecoderPath, multiCfg.Languages, defaultLang)
 	if err != nil {
 		fmt.Printf("Warning: failed to create language identifier: %v, using Parakeet only\n", err)
 		return parakeet, nil
 	}
 
-	// Build per-language engine map
 	engines := map[string]Engine{}
-	defaultLang := multiCfg.DefaultLang
-	if defaultLang == "" {
-		defaultLang = "en"
-	}
 
 	// Parakeet handles all Parakeet-supported languages (mapped to default)
 	engines[defaultLang] = parakeet

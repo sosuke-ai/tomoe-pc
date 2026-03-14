@@ -254,7 +254,7 @@ func (d *Daemon) cleanupAll(dict *streamingDictation, meet *meetingState) {
 
 type streamingDictation struct {
 	coordinator *live.Coordinator
-	done        chan struct{}
+	streamer    *live.DictationStreamer
 	cancel      context.CancelFunc
 }
 
@@ -299,70 +299,22 @@ func (d *Daemon) startStreamingDictation(ctx context.Context, autoStopCh chan st
 	// Re-grab hotkeys — audio device init can interfere with X11 key grabs
 	hotkey.ReGrabAll()
 
-	done := make(chan struct{})
-	silenceTimeout := d.silenceTimeout()
-
-	go func() {
-		defer close(done)
-
-		// Wait for the first segment before starting the silence timer.
-		// The VAD needs time to detect the first speech boundary.
-		var timer *time.Timer
-		var timerCh <-chan time.Time // nil channel blocks forever in select
-
-		resetTimer := func() {
-			if timer == nil {
-				timer = time.NewTimer(silenceTimeout)
-				timerCh = timer.C
-			} else {
-				if !timer.Stop() {
-					select {
-					case <-timer.C:
-					default:
-					}
-				}
-				timer.Reset(silenceTimeout)
-			}
-		}
-
-		for {
+	streamer := live.NewDictationStreamer(coordinator, live.DictationConfig{
+		Clipboard:      d.svc.Clipboard,
+		UseClipboard:   d.cfg.Output.Clipboard,
+		AutoPaste:      d.cfg.Output.AutoPaste,
+		SilenceTimeout: d.silenceTimeout(),
+		OnAutoStop: func() {
 			select {
-			case seg, ok := <-coordinator.Segments():
-				if !ok {
-					return // channel closed
-				}
-				resetTimer()
-
-				if d.cfg.Output.Clipboard {
-					if err := d.svc.Clipboard.Write(seg.Text); err != nil {
-						fmt.Printf("Clipboard error: %v\n", err)
-					}
-				}
-				if d.cfg.Output.AutoPaste {
-					if err := d.svc.Clipboard.TypeText(seg.Text); err != nil {
-						fmt.Printf("Auto-type error: %v\n", err)
-					}
-				}
-				fmt.Printf("[dictation] %s\n", seg.Text)
-
-			case <-coordinator.Activity():
-				// VAD detected ongoing speech — reset silence timer
-				resetTimer()
-
-			case <-timerCh:
-				// Silence timeout — signal auto-stop
-				select {
-				case autoStopCh <- struct{}{}:
-				default:
-				}
-				return
+			case autoStopCh <- struct{}{}:
+			default:
 			}
-		}
-	}()
+		},
+	})
 
 	return &streamingDictation{
 		coordinator: coordinator,
-		done:        done,
+		streamer:    streamer,
 		cancel:      cancel,
 	}, nil
 }
@@ -370,7 +322,7 @@ func (d *Daemon) startStreamingDictation(ctx context.Context, autoStopCh chan st
 func (d *Daemon) stopDictation(ds *streamingDictation) {
 	ds.coordinator.Stop()
 	ds.cancel()
-	<-ds.done
+	<-ds.streamer.Done()
 	d.tray.SetIdle()
 	// Re-grab hotkeys — audio/tray operations can interfere with X11 grabs
 	hotkey.ReGrabAll()
@@ -474,7 +426,11 @@ func (d *Daemon) startMeetingWithPlatform(ctx context.Context, platform string) 
 			mu.Lock()
 			sess.Segments = append(sess.Segments, seg)
 			mu.Unlock()
-			fmt.Printf("[%s] %s: %s\n", formatTimestamp(seg.StartTime), seg.Speaker, seg.Text)
+			if seg.Language != "" {
+				fmt.Printf("[%s] [%s] %s: %s\n", formatTimestamp(seg.StartTime), seg.Language, seg.Speaker, seg.Text)
+			} else {
+				fmt.Printf("[%s] %s: %s\n", formatTimestamp(seg.StartTime), seg.Speaker, seg.Text)
+			}
 		}
 	}()
 
