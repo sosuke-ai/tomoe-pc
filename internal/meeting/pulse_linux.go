@@ -156,6 +156,13 @@ static void pulse_request_source_outputs(void) {
     if (op) pa_operation_unref(op);
 }
 
+// Wake a blocking pa_mainloop_iterate so the Go event loop can exit.
+static void pulse_request_quit(void) {
+    if (pa_ml) {
+        pa_mainloop_quit(pa_ml, 0);
+    }
+}
+
 static void pulse_cleanup_connection(void) {
     if (pa_ctx) {
         pa_context_disconnect(pa_ctx);
@@ -289,6 +296,11 @@ func pulseSubscribe() error {
 
 func pulseCleanup() {
 	C.pulse_cleanup_connection()
+}
+
+// pulseQuit wakes a blocked pa_mainloop_iterate so the event loop exits.
+func pulseQuit() {
+	C.pulse_request_quit()
 }
 
 // pulseEventLoop runs the PulseAudio mainloop on a locked OS thread.

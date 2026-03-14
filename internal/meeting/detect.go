@@ -119,6 +119,10 @@ func (d *Detector) Stop() {
 	cancel := d.cancel
 	d.mu.Unlock()
 
+	// Wake the blocked pa_mainloop_iterate so the event loop goroutine
+	// can check ctx.Done() and exit promptly.
+	pulseQuit()
+
 	if cancel != nil {
 		cancel()
 	}
