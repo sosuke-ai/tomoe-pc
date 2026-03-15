@@ -79,7 +79,13 @@ func (d *Daemon) Run(ctx context.Context) error {
 	defer RemovePID()
 
 	// Start system tray
-	d.tray = startDaemonTray()
+	var languages []string
+	defaultLang := "en"
+	if d.engines != nil {
+		languages = d.engines.Languages()
+		defaultLang = d.engines.DefaultLang()
+	}
+	d.tray = startDaemonTray(languages, defaultLang)
 	defer d.tray.Close()
 
 	// Register dictation hotkey
@@ -132,12 +138,12 @@ func (d *Daemon) Run(ctx context.Context) error {
 	autoStopCh := make(chan struct{}, 1)
 
 	// toggleDictation handles start/stop dictation from any trigger (hotkey or tray).
-	toggleDictation := func() {
+	toggleDictation := func(lang string) {
 		if meetState != nil {
 			return // ignore dictation while meeting active
 		}
 		if dictState == nil {
-			ds, err := d.startStreamingDictation(ctx, autoStopCh)
+			ds, err := d.startStreamingDictation(ctx, autoStopCh, lang)
 			if err != nil {
 				_ = d.svc.Notifier.Send("Tomoe", fmt.Sprintf("Dictation failed: %v", err))
 				fmt.Printf("Error starting dictation: %v\n", err)
@@ -145,8 +151,8 @@ func (d *Daemon) Run(ctx context.Context) error {
 			}
 			dictState = ds
 			d.tray.SetDictating()
-			_ = d.svc.Notifier.Send("Tomoe", "Dictating...")
-			fmt.Println("Streaming dictation started...")
+			_ = d.svc.Notifier.Send("Tomoe", fmt.Sprintf("Dictating (%s)...", lang))
+			fmt.Printf("Streaming dictation started (%s)...\n", lang)
 		} else {
 			d.stopDictation(dictState)
 			dictState = nil
@@ -154,12 +160,12 @@ func (d *Daemon) Run(ctx context.Context) error {
 	}
 
 	// toggleMeeting handles start/stop meeting from any trigger (hotkey or tray).
-	toggleMeeting := func() {
+	toggleMeeting := func(lang string) {
 		if dictState != nil {
 			return // ignore meeting while dictating
 		}
 		if meetState == nil {
-			ms, err := d.startMeeting(ctx)
+			ms, err := d.startMeetingWithPlatform(ctx, "", lang)
 			if err != nil {
 				_ = d.svc.Notifier.Send("Tomoe", fmt.Sprintf("Meeting start failed: %v", err))
 				fmt.Printf("Error starting meeting: %v\n", err)
@@ -167,8 +173,8 @@ func (d *Daemon) Run(ctx context.Context) error {
 			}
 			meetState = ms
 			d.tray.SetMeetingRecording()
-			_ = d.svc.Notifier.Send("Tomoe", "Meeting recording started")
-			fmt.Println("Meeting recording started...")
+			_ = d.svc.Notifier.Send("Tomoe", fmt.Sprintf("Meeting recording started (%s)", lang))
+			fmt.Printf("Meeting recording started (%s)...\n", lang)
 		} else {
 			d.stopMeeting(meetState)
 			meetState = nil
@@ -193,10 +199,10 @@ func (d *Daemon) Run(ctx context.Context) error {
 			return nil
 
 		case <-d.svc.Hotkey.Keydown():
-			toggleDictation()
+			toggleDictation(defaultLang)
 
-		case <-d.tray.dictationCh:
-			toggleDictation()
+		case lang := <-d.tray.dictationCh:
+			toggleDictation(lang)
 
 		case <-autoStopCh:
 			if dictState != nil {
@@ -208,10 +214,10 @@ func (d *Daemon) Run(ctx context.Context) error {
 			}
 
 		case <-meetingCh:
-			toggleMeeting()
+			toggleMeeting(defaultLang)
 
-		case <-d.tray.meetingCh:
-			toggleMeeting()
+		case lang := <-d.tray.meetingCh:
+			toggleMeeting(lang)
 
 		case evt := <-detectCh:
 			switch evt.Type {
@@ -220,7 +226,7 @@ func (d *Daemon) Run(ctx context.Context) error {
 					break // ignore if already recording
 				}
 				platform := string(evt.Platform)
-				ms, err := d.startMeetingWithPlatform(ctx, platform)
+				ms, err := d.startMeetingWithPlatform(ctx, platform, defaultLang)
 				if err != nil {
 					_ = d.svc.Notifier.Send("Tomoe", fmt.Sprintf("Auto-detect meeting start failed: %v", err))
 					fmt.Printf("Error auto-starting meeting: %v\n", err)
@@ -266,7 +272,7 @@ func (d *Daemon) silenceTimeout() time.Duration {
 	return time.Duration(t * float64(time.Second))
 }
 
-func (d *Daemon) startStreamingDictation(ctx context.Context, autoStopCh chan struct{}) (*streamingDictation, error) {
+func (d *Daemon) startStreamingDictation(ctx context.Context, autoStopCh chan struct{}, lang string) (*streamingDictation, error) {
 	var vadPath string
 	if d.modelStatus != nil {
 		vadPath = d.modelStatus.VADPath
@@ -282,7 +288,7 @@ func (d *Daemon) startStreamingDictation(ctx context.Context, autoStopCh chan st
 	}
 
 	cfg := live.Config{
-		Engine:            d.engines.Default(),
+		Engine:            d.engines.Get(lang),
 		MicCapturer:       audio.NewStreamCapturer(micCapturer, audio.DefaultWindowSize, 128),
 		VADPath:           vadPath,
 		SegmentBufferSize: 32,
@@ -337,18 +343,14 @@ type meetingState struct {
 	done        chan struct{}
 }
 
-func (d *Daemon) startMeeting(ctx context.Context) (*meetingState, error) {
-	return d.startMeetingWithPlatform(ctx, "")
-}
-
-func (d *Daemon) startMeetingWithPlatform(ctx context.Context, platform string) (*meetingState, error) {
+func (d *Daemon) startMeetingWithPlatform(ctx context.Context, platform string, lang string) (*meetingState, error) {
 	var vadPath string
 	if d.modelStatus != nil {
 		vadPath = d.modelStatus.VADPath
 	}
 
 	cfg := live.Config{
-		Engine:            d.engines.Default(),
+		Engine:            d.engines.Get(lang),
 		Embedder:          d.embedder,
 		Tracker:           d.tracker,
 		VADPath:           vadPath,

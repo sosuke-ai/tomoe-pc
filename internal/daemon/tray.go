@@ -3,6 +3,7 @@ package daemon
 import (
 	"fmt"
 	"os"
+	"strings"
 	"sync/atomic"
 
 	"fyne.io/systray"
@@ -11,8 +12,8 @@ import (
 // daemonTray manages the system tray icon for the CLI daemon.
 type daemonTray struct {
 	quitCh      chan struct{}
-	dictationCh chan struct{}
-	meetingCh   chan struct{}
+	dictationCh chan string // carries language code; "" = stop
+	meetingCh   chan string // carries language code; "" = stop
 	ready       atomic.Bool
 
 	mDictation *systray.MenuItem
@@ -20,12 +21,13 @@ type daemonTray struct {
 }
 
 // startDaemonTray starts the system tray in a goroutine.
-// Returns immediately; the tray initializes asynchronously.
-func startDaemonTray() *daemonTray {
+// languages is the list of available language codes (e.g. ["en", "bn"]).
+// defaultLang is the fallback language code.
+func startDaemonTray(languages []string, defaultLang string) *daemonTray {
 	t := &daemonTray{
 		quitCh:      make(chan struct{}, 1),
-		dictationCh: make(chan struct{}, 1),
-		meetingCh:   make(chan struct{}, 1),
+		dictationCh: make(chan string, 1),
+		meetingCh:   make(chan string, 1),
 	}
 	go func() {
 		defer func() {
@@ -38,37 +40,84 @@ func startDaemonTray() *daemonTray {
 			systray.SetTooltip("Tomoe — Ready")
 			systray.SetIcon(daemonTrayIcon)
 
-			t.mDictation = systray.AddMenuItem("Start Dictation", "Start/Stop dictation")
-			t.mMeeting = systray.AddMenuItem("Start Meeting", "Start/Stop meeting recording")
+			if len(languages) > 1 {
+				t.initMultilingual(languages)
+			} else {
+				t.initSingleLang(defaultLang)
+			}
+
 			systray.AddSeparator()
 			mQuit := systray.AddMenuItem("Quit", "Stop Tomoe daemon")
 			t.ready.Store(true)
 
 			go func() {
-				for {
-					select {
-					case <-t.mDictation.ClickedCh:
-						select {
-						case t.dictationCh <- struct{}{}:
-						default:
-						}
-					case <-t.mMeeting.ClickedCh:
-						select {
-						case t.meetingCh <- struct{}{}:
-						default:
-						}
-					case <-mQuit.ClickedCh:
-						select {
-						case t.quitCh <- struct{}{}:
-						default:
-						}
-						return
-					}
+				<-mQuit.ClickedCh
+				select {
+				case t.quitCh <- struct{}{}:
+				default:
 				}
 			}()
 		}, func() {})
 	}()
 	return t
+}
+
+// initSingleLang creates simple dictation/meeting items for a single language.
+func (t *daemonTray) initSingleLang(lang string) {
+	t.mDictation = systray.AddMenuItem("Start Dictation", "Start/Stop dictation")
+	t.mMeeting = systray.AddMenuItem("Start Meeting", "Start/Stop meeting recording")
+
+	go func() {
+		for {
+			select {
+			case <-t.mDictation.ClickedCh:
+				select {
+				case t.dictationCh <- lang:
+				default:
+				}
+			case <-t.mMeeting.ClickedCh:
+				select {
+				case t.meetingCh <- lang:
+				default:
+				}
+			}
+		}
+	}()
+}
+
+// initMultilingual creates parent items with per-language sub-items.
+func (t *daemonTray) initMultilingual(languages []string) {
+	t.mDictation = systray.AddMenuItem("Dictation", "Start dictation")
+	for _, lang := range languages {
+		sub := t.mDictation.AddSubMenuItem(
+			fmt.Sprintf("Start Dictation - %s", strings.ToUpper(lang)),
+			fmt.Sprintf("Dictate in %s", lang),
+		)
+		go func(l string, item *systray.MenuItem) {
+			for range item.ClickedCh {
+				select {
+				case t.dictationCh <- l:
+				default:
+				}
+			}
+		}(lang, sub)
+	}
+
+	t.mMeeting = systray.AddMenuItem("Meeting", "Start meeting recording")
+	for _, lang := range languages {
+		sub := t.mMeeting.AddSubMenuItem(
+			fmt.Sprintf("Start Meeting - %s", strings.ToUpper(lang)),
+			fmt.Sprintf("Record meeting in %s", lang),
+		)
+		go func(l string, item *systray.MenuItem) {
+			for range item.ClickedCh {
+				select {
+				case t.meetingCh <- l:
+				default:
+				}
+			}
+		}(lang, sub)
+	}
 }
 
 func (t *daemonTray) SetIdle() {
@@ -78,11 +127,11 @@ func (t *daemonTray) SetIdle() {
 	systray.SetTooltip("Tomoe — Ready")
 	systray.SetIcon(daemonTrayIcon)
 	if t.mDictation != nil {
-		t.mDictation.SetTitle("Start Dictation")
+		t.mDictation.SetTitle("Dictation")
 		t.mDictation.Show()
 	}
 	if t.mMeeting != nil {
-		t.mMeeting.SetTitle("Start Meeting")
+		t.mMeeting.SetTitle("Meeting")
 		t.mMeeting.Show()
 	}
 }
