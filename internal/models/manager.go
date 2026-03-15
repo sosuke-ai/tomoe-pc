@@ -112,9 +112,10 @@ func (s *Status) DiarizationReady() bool {
 	return s.SpeakerEmbeddingReady && s.SpeakerSegmentationReady
 }
 
-// MultilingualReady reports whether lang-id and Bengali models are present.
+// MultilingualReady reports whether Bengali model is present.
+// Lang-id (Whisper tiny) is no longer required — language selection is manual.
 func (s *Status) MultilingualReady() bool {
-	return s.LangIDReady && s.BengaliReady
+	return s.BengaliReady
 }
 
 // String returns a human-readable summary.
@@ -249,7 +250,8 @@ func (m *Manager) DownloadSpeakerModel(force bool) error {
 	return nil
 }
 
-// DownloadMultilingual downloads language identification and Bengali models.
+// DownloadMultilingual downloads Bengali model for multilingual support.
+// Whisper tiny (lang-id) is no longer downloaded — language selection is manual.
 // If force is true, re-downloads even if already present.
 func (m *Manager) DownloadMultilingual(force bool) error {
 	if err := os.MkdirAll(m.modelDir, 0o755); err != nil {
@@ -257,17 +259,6 @@ func (m *Manager) DownloadMultilingual(force bool) error {
 	}
 
 	status := m.Check()
-
-	// Download Whisper tiny for language identification
-	if force || !status.LangIDReady {
-		fmt.Println("Downloading Whisper tiny model for language identification...")
-		if err := m.downloadAndExtractArchive(WhisperTinyArchiveURL); err != nil {
-			return fmt.Errorf("downloading Whisper tiny model: %w", err)
-		}
-		fmt.Println("Whisper tiny model downloaded and extracted.")
-	} else {
-		fmt.Println("Whisper tiny model already present, skipping.")
-	}
 
 	// Download Bengali Zipformer transducer
 	if force || !status.BengaliReady {

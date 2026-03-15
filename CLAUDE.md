@@ -21,7 +21,6 @@ Local-first speech-to-text desktop application for Linux. Two modes of operation
 ```
 Go binary → cgo → sherpa-onnx C API → ONNX Runtime (CUDA EP / CPU EP)
   → Parakeet TDT 0.6B v3 INT8 (encoder + decoder + joiner, 25 languages)
-  → Whisper tiny INT8 (~98MB, language identification)
   → Bengali Zipformer transducer (~87MB, streaming via OnlineRecognizer)
   → Silero VAD (~2MB)
   → 3D-Speaker embedding model (~25MB)
@@ -30,24 +29,26 @@ Go binary → cgo → sherpa-onnx C API → ONNX Runtime (CUDA EP / CPU EP)
 ### Data Flow (Meeting Mode)
 
 ```
-Mic Capturer → StreamCapturer → VAD → [Lang-ID → Route] → Transcribe → Segment{speaker:"You",lang:"en"}
+Mic Capturer → StreamCapturer → VAD → Transcribe(lang) → Segment{speaker:"You",lang:"en"}
+                                                                          │
+Monitor Capturer → StreamCapturer → VAD → Transcribe(lang) → Embed → Cluster → Segment{speaker:"Person N",lang:"bn"}
                                                                                 │
-Monitor Capturer → StreamCapturer → VAD → [Lang-ID → Route] → Embed → Cluster → Segment{speaker:"Person N",lang:"bn"}
-                                            │                                    │
-                                      Transcribe                           Wails EventsEmit
-                                                                    │
-                                                             React Frontend
+                                                                          Wails EventsEmit
+                                                                                │
+                                                                         React Frontend
 ```
+
+Language is selected manually via system tray sub-menus or GUI dropdown (no auto-detection).
 
 ### Data Flow (CLI Dictation)
 
 ```
-Mic Capturer → StreamCapturer → VAD → [Lang-ID → Route] → Transcribe → Segment
-                                                                            │
-                                                                   Clipboard.Write(text)
-                                                       │
-                                              Clipboard.AutoPaste()
-                                              (detects terminal vs GUI app)
+Mic Capturer → StreamCapturer → VAD → Transcribe(lang) → Segment
+                                                              │
+                                                     Clipboard.Write(text)
+                                                              │
+                                                    Clipboard.AutoPaste()
+                                                    (detects terminal vs GUI app)
 ```
 
 ### Key Design Decisions
@@ -59,7 +60,7 @@ Mic Capturer → StreamCapturer → VAD → [Lang-ID → Route] → Transcribe �
 - **Async session save**: `StopSession()` releases the mutex immediately, emits `session:stopped`, then runs MP3 encoding + session save in a background goroutine.
 - **VAD activity channel**: Coordinator exposes an `Activity()` channel signaled when `vad.IsSpeech()` returns true, used to reset the silence timer during continuous speech (not just on completed segments).
 - **PulseAudio meeting detection**: Simultaneous source-output (mic) + sink-input (speaker) from the same PID reliably indicates an active meeting. cgo bindings to libpulse (`#cgo pkg-config: libpulse`) follow the same pattern as `hotkey_linux.go`: static C globals, thread-locked event loop, `//export` callbacks. Platform identified via native app name or `xdotool` window title matching for browser-based meetings.
-- **Multilingual MultiEngine**: `MultiEngine` implements `Engine` interface, wrapping lang-id (Whisper tiny) + per-language engines. Each VAD segment is language-detected (~100-150ms CPU) then routed to the correct model. Callers are unchanged — transparent to coordinator, daemon, and GUI. Disabled by default; when disabled, factory returns plain Parakeet with zero overhead.
+- **Manual language selection via EngineSet**: `EngineSet` holds a `map[string]Engine` (e.g., "en"→Parakeet, "bn"→Bengali Zipformer). Does NOT implement `Engine` — callers explicitly pick a language via `Get(lang)`. Tray sub-menus provide per-language start items; hotkey press uses the default language. Sessions store language code for re-transcription with a different engine.
 - **Hotword boosting**: sherpa-onnx supports `modified_beam_search` with `HotwordsFile` for Parakeet TDT. Works independently of multilingual. Configurable via `[transcription]` section in config.toml.
 
 ## Project Structure
