@@ -115,8 +115,8 @@ func TestNewWithNilOpts(t *testing.T) {
 	if d.cfg != cfg {
 		t.Error("New() did not store cfg")
 	}
-	if d.engine != nil {
-		t.Error("New() engine should be nil")
+	if d.engines != nil {
+		t.Error("New() engines should be nil")
 	}
 	if d.svc != nil {
 		t.Error("New() svc should be nil")

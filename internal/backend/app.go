@@ -27,7 +27,7 @@ type App struct {
 	ctx context.Context
 	cfg *config.Config
 
-	engine      transcribe.Engine
+	engines     *transcribe.EngineSet
 	embedder    *speaker.Embedder
 	tracker     *speaker.Tracker
 	coordinator *live.Coordinator
@@ -82,7 +82,7 @@ func (a *App) Startup(ctx context.Context) {
 
 	// Create transcription engine if models are ready
 	if status.Ready() {
-		engine, err := transcribe.NewEngineFromConfig(transcribe.Config{
+		engines, err := transcribe.NewEngineSetFromConfig(transcribe.Config{
 			EncoderPath:    status.EncoderPath,
 			DecoderPath:    status.DecoderPath,
 			JoinerPath:     status.JoinerPath,
@@ -95,7 +95,7 @@ func (a *App) Startup(ctx context.Context) {
 			HotwordsScore:  cfg.Transcription.HotwordsScore,
 		}, status, &cfg.Multilingual)
 		if err == nil {
-			a.engine = engine
+			a.engines = engines
 		}
 	}
 
@@ -137,8 +137,8 @@ func (a *App) Shutdown(ctx context.Context) {
 	if dictCancel != nil {
 		dictCancel()
 	}
-	if a.engine != nil {
-		a.engine.Close()
+	if a.engines != nil {
+		a.engines.Close()
 	}
 	if a.embedder != nil {
 		a.embedder.Close()
@@ -177,14 +177,14 @@ func (a *App) StartSession(micDevice, monitorDevice string) error {
 		return fmt.Errorf("session already in progress")
 	}
 
-	if a.engine == nil {
+	if a.engines == nil {
 		return fmt.Errorf("transcription engine not initialized (models may not be downloaded)")
 	}
 
 	status := a.modelMgr.Check()
 
 	cfg := live.Config{
-		Engine:            a.engine,
+		Engine:            a.engines.Default(),
 		Embedder:          a.embedder,
 		Tracker:           a.tracker,
 		VADPath:           status.VADPath,

@@ -171,7 +171,7 @@ func (dhk *dictationManager) startDictation() {
 	}
 
 	cfg := live.Config{
-		Engine:            dhk.app.engine,
+		Engine:            dhk.app.engines.Default(),
 		MicCapturer:       audio.NewStreamCapturer(micCapturer, audio.DefaultWindowSize, 128),
 		VADPath:           vadPath,
 		SegmentBufferSize: 32,

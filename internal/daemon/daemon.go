@@ -27,9 +27,9 @@ import (
 // Daemon orchestrates the hotkey → capture → transcribe → clipboard pipeline,
 // and optionally supports meeting recording with live transcription.
 type Daemon struct {
-	cfg    *config.Config
-	engine transcribe.Engine
-	svc    *platform.Services
+	cfg     *config.Config
+	engines *transcribe.EngineSet
+	svc     *platform.Services
 
 	// Meeting mode dependencies (optional — nil disables meeting mode)
 	meetingHotkey hotkey.Listener
@@ -53,11 +53,11 @@ type MeetingOpts struct {
 }
 
 // New creates a Daemon with the given dependencies.
-func New(cfg *config.Config, engine transcribe.Engine, svc *platform.Services, opts *MeetingOpts) *Daemon {
+func New(cfg *config.Config, engines *transcribe.EngineSet, svc *platform.Services, opts *MeetingOpts) *Daemon {
 	d := &Daemon{
-		cfg:    cfg,
-		engine: engine,
-		svc:    svc,
+		cfg:     cfg,
+		engines: engines,
+		svc:     svc,
 	}
 	if opts != nil {
 		d.meetingHotkey = opts.MeetingHotkey
@@ -282,7 +282,7 @@ func (d *Daemon) startStreamingDictation(ctx context.Context, autoStopCh chan st
 	}
 
 	cfg := live.Config{
-		Engine:            d.engine,
+		Engine:            d.engines.Default(),
 		MicCapturer:       audio.NewStreamCapturer(micCapturer, audio.DefaultWindowSize, 128),
 		VADPath:           vadPath,
 		SegmentBufferSize: 32,
@@ -348,7 +348,7 @@ func (d *Daemon) startMeetingWithPlatform(ctx context.Context, platform string) 
 	}
 
 	cfg := live.Config{
-		Engine:            d.engine,
+		Engine:            d.engines.Default(),
 		Embedder:          d.embedder,
 		Tracker:           d.tracker,
 		VADPath:           vadPath,

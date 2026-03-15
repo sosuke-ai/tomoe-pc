@@ -83,8 +83,8 @@ func runStart(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("models not downloaded (run 'tomoe init' or 'tomoe model download')")
 	}
 
-	// Create transcription engine (multilingual if configured)
-	engine, err := transcribe.NewEngineFromConfig(transcribe.Config{
+	// Create transcription engines (multilingual if configured)
+	engines, err := transcribe.NewEngineSetFromConfig(transcribe.Config{
 		EncoderPath:    status.EncoderPath,
 		DecoderPath:    status.DecoderPath,
 		JoinerPath:     status.JoinerPath,
@@ -99,7 +99,7 @@ func runStart(cmd *cobra.Command, args []string) error {
 	if err != nil {
 		return fmt.Errorf("creating transcription engine: %w", err)
 	}
-	defer engine.Close()
+	defer engines.Close()
 
 	// Create platform services
 	svc, err := platform.New(cfg)
@@ -144,7 +144,7 @@ func runStart(cmd *cobra.Command, args []string) error {
 	}
 
 	// Run daemon
-	d := daemon.New(cfg, engine, svc, opts)
+	d := daemon.New(cfg, engines, svc, opts)
 	return d.Run(context.Background())
 }
 
@@ -391,8 +391,8 @@ var transcribeCmd = &cobra.Command{
 		gpuInfo := gpu.Detect()
 		useGPU := gpuInfo.Available && gpuInfo.Sufficient
 
-		// Create transcription engine (multilingual if configured)
-		engine, err := transcribe.NewEngineFromConfig(transcribe.Config{
+		// Create transcription engines (multilingual if configured)
+		engines, err := transcribe.NewEngineSetFromConfig(transcribe.Config{
 			EncoderPath:    status.EncoderPath,
 			DecoderPath:    status.DecoderPath,
 			JoinerPath:     status.JoinerPath,
@@ -407,7 +407,9 @@ var transcribeCmd = &cobra.Command{
 		if err != nil {
 			return fmt.Errorf("creating transcription engine: %w", err)
 		}
-		defer engine.Close()
+		defer engines.Close()
+
+		engine := engines.Default()
 
 		// If diarization models are available, transcribe with speaker labels
 		if status.DiarizationReady() {
