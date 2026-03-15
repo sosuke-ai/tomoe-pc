@@ -1,6 +1,9 @@
 package backend
 
 import (
+	"fmt"
+	"strings"
+
 	"fyne.io/systray"
 	wailsRuntime "github.com/wailsapp/wails/v2/pkg/runtime"
 )
@@ -36,45 +39,97 @@ func onTrayReady(app *App) {
 	tm := &trayManager{app: app}
 	app.tray = tm
 
-	tm.mDictation = systray.AddMenuItem("Start Dictation", "Start/Stop dictation")
-	tm.mMeeting = systray.AddMenuItem("Start Meeting", "Start/Stop meeting recording")
+	languages := app.GetAvailableLanguages()
+	defaultLang := app.defaultLang()
+
+	if len(languages) > 1 {
+		tm.initMultilingual(languages)
+	} else {
+		tm.initSingleLang(defaultLang)
+	}
+
 	systray.AddSeparator()
 	tm.mQuit = systray.AddMenuItem("Quit", "Quit Tomoe")
 
-	go tm.handleEvents()
+	go func() {
+		<-tm.mQuit.ClickedCh
+		if tm.app.recording {
+			_, _ = tm.app.StopSession()
+		}
+		systray.Quit()
+		if tm.app.ctx != nil {
+			wailsRuntime.Quit(tm.app.ctx)
+		}
+	}()
 }
 
-func (tm *trayManager) handleEvents() {
-	for {
-		select {
-		case <-tm.mDictation.ClickedCh:
-			if tm.app.ctx == nil {
-				continue
-			}
-			select {
-			case tm.app.trayDictCh <- struct{}{}:
-			default:
-			}
+// initSingleLang creates simple dictation/meeting items for a single language.
+func (tm *trayManager) initSingleLang(lang string) {
+	tm.mDictation = systray.AddMenuItem("Start Dictation", "Start/Stop dictation")
+	tm.mMeeting = systray.AddMenuItem("Start Meeting", "Start/Stop meeting recording")
 
-		case <-tm.mMeeting.ClickedCh:
-			if tm.app.ctx == nil {
-				continue
-			}
+	go func() {
+		for {
 			select {
-			case tm.app.trayMeetCh <- struct{}{}:
-			default:
+			case <-tm.mDictation.ClickedCh:
+				if tm.app.ctx == nil {
+					continue
+				}
+				select {
+				case tm.app.trayDictCh <- lang:
+				default:
+				}
+			case <-tm.mMeeting.ClickedCh:
+				if tm.app.ctx == nil {
+					continue
+				}
+				select {
+				case tm.app.trayMeetCh <- lang:
+				default:
+				}
 			}
-
-		case <-tm.mQuit.ClickedCh:
-			if tm.app.recording {
-				_, _ = tm.app.StopSession()
-			}
-			systray.Quit()
-			if tm.app.ctx != nil {
-				wailsRuntime.Quit(tm.app.ctx)
-			}
-			return
 		}
+	}()
+}
+
+// initMultilingual creates parent items with per-language sub-items.
+func (tm *trayManager) initMultilingual(languages []string) {
+	tm.mDictation = systray.AddMenuItem("Dictation", "Start dictation")
+	for _, lang := range languages {
+		sub := tm.mDictation.AddSubMenuItem(
+			fmt.Sprintf("Start Dictation - %s", strings.ToUpper(lang)),
+			fmt.Sprintf("Dictate in %s", lang),
+		)
+		go func(l string, item *systray.MenuItem) {
+			for range item.ClickedCh {
+				if tm.app.ctx == nil {
+					continue
+				}
+				select {
+				case tm.app.trayDictCh <- l:
+				default:
+				}
+			}
+		}(lang, sub)
+	}
+
+	tm.mMeeting = systray.AddMenuItem("Meeting", "Start meeting recording")
+	for _, lang := range languages {
+		sub := tm.mMeeting.AddSubMenuItem(
+			fmt.Sprintf("Start Meeting - %s", strings.ToUpper(lang)),
+			fmt.Sprintf("Record meeting in %s", lang),
+		)
+		go func(l string, item *systray.MenuItem) {
+			for range item.ClickedCh {
+				if tm.app.ctx == nil {
+					continue
+				}
+				select {
+				case tm.app.trayMeetCh <- l:
+				default:
+				}
+			}
+		}(lang, sub)
 	}
 }
 
@@ -82,11 +137,11 @@ func (tm *trayManager) setIdle() {
 	systray.SetTooltip("Tomoe — Ready")
 	systray.SetIcon(trayIcon)
 	if tm.mDictation != nil {
-		tm.mDictation.SetTitle("Start Dictation")
+		tm.mDictation.SetTitle("Dictation")
 		tm.mDictation.Show()
 	}
 	if tm.mMeeting != nil {
-		tm.mMeeting.SetTitle("Start Meeting")
+		tm.mMeeting.SetTitle("Meeting")
 		tm.mMeeting.Show()
 	}
 }

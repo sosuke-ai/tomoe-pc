@@ -42,17 +42,19 @@ type App struct {
 	currentSess     *session.Session
 
 	// trayDictCh is signalled by the tray "Start/Stop Dictation" menu item.
-	trayDictCh chan struct{}
+	// Carries language code; "" = stop.
+	trayDictCh chan string
 	// trayMeetCh is signalled by the tray "Start/Stop Meeting" menu item.
-	trayMeetCh chan struct{}
+	// Carries language code; "" = stop.
+	trayMeetCh chan string
 	tray       *trayManager
 }
 
 // NewApp creates a new App instance.
 func NewApp() *App {
 	return &App{
-		trayDictCh: make(chan struct{}, 1),
-		trayMeetCh: make(chan struct{}, 1),
+		trayDictCh: make(chan string, 1),
+		trayMeetCh: make(chan string, 1),
 	}
 }
 
@@ -150,6 +152,14 @@ func (a *App) BeforeClose(ctx context.Context) bool {
 	return false // allow window close → app exit
 }
 
+// defaultLang returns the default language code from the engine set.
+func (a *App) defaultLang() string {
+	if a.engines != nil {
+		return a.engines.DefaultLang()
+	}
+	return "en"
+}
+
 // fixSignals patches ONNX Runtime / WebKit signal handlers that lack SA_ONSTACK.
 // Called defensively on every frontend-bound method because WebKit/JSC can
 // reinstall the SIGSEGV handler after Startup() returns.
@@ -168,7 +178,7 @@ func (a *App) ListMonitorSources() ([]audio.DeviceInfo, error) {
 }
 
 // StartSession begins a new live transcription session.
-func (a *App) StartSession(micDevice, monitorDevice string) error {
+func (a *App) StartSession(micDevice, monitorDevice, lang string) error {
 	a.fixSignals()
 	a.mu.Lock()
 	defer a.mu.Unlock()
@@ -181,10 +191,14 @@ func (a *App) StartSession(micDevice, monitorDevice string) error {
 		return fmt.Errorf("transcription engine not initialized (models may not be downloaded)")
 	}
 
+	if lang == "" {
+		lang = a.engines.DefaultLang()
+	}
+
 	status := a.modelMgr.Check()
 
 	cfg := live.Config{
-		Engine:            a.engines.Default(),
+		Engine:            a.engines.Get(lang),
 		Embedder:          a.embedder,
 		Tracker:           a.tracker,
 		VADPath:           status.VADPath,
@@ -243,6 +257,7 @@ func (a *App) StartSession(micDevice, monitorDevice string) error {
 	a.currentSess = &session.Session{
 		ID:        uuid.New().String(),
 		Title:     fmt.Sprintf("Session %s", time.Now().Format("2006-01-02 15:04")),
+		Language:  lang,
 		CreatedAt: time.Now(),
 		Sources:   sources,
 	}
@@ -437,6 +452,24 @@ func (a *App) IsRecording() bool {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	return a.recording
+}
+
+// GetAvailableLanguages returns the list of configured language codes.
+func (a *App) GetAvailableLanguages() []string {
+	a.fixSignals()
+	if a.engines == nil {
+		return []string{"en"}
+	}
+	return a.engines.Languages()
+}
+
+// GetDefaultLanguage returns the default language code.
+func (a *App) GetDefaultLanguage() string {
+	a.fixSignals()
+	if a.engines == nil {
+		return "en"
+	}
+	return a.engines.DefaultLang()
 }
 
 // bytesWriter is a simple io.Writer that appends to a byte slice.

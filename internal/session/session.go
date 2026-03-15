@@ -7,6 +7,7 @@ type Session struct {
 	ID        string    `json:"id"`
 	Title     string    `json:"title"`
 	Platform  string    `json:"platform,omitempty"` // "Teams", "Meet", "Zoom", etc.
+	Language  string    `json:"language,omitempty"` // ISO 639-1 code: "en", "bn", etc.
 	CreatedAt time.Time `json:"created_at"`
 	EndedAt   time.Time `json:"ended_at,omitempty"`
 	Duration  float64   `json:"duration"` // seconds

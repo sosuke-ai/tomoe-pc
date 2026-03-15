@@ -12,6 +12,7 @@ export interface Session {
   id: string;
   title: string;
   platform?: string;
+  language?: string;
   created_at: string;
   ended_at?: string;
   duration: number;

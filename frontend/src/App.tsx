@@ -18,6 +18,8 @@ function App() {
   const [monitorDevice, setMonitorDevice] = useState('');
   const [devices, setDevices] = useState<DeviceInfo[]>([]);
   const [monitors, setMonitors] = useState<DeviceInfo[]>([]);
+  const [languages, setLanguages] = useState<string[]>(['en']);
+  const [selectedLang, setSelectedLang] = useState('en');
   const [exportSessionId, setExportSessionId] = useState<string | null>(null);
   const { segments, clear: clearTranscript } = useTranscript();
   const { isRecording, startTime, reset: resetSession } = useSession();
@@ -54,6 +56,15 @@ function App() {
           const def = mons.find((m: DeviceInfo) => m.IsDefault);
           setMonitorDevice(def ? def.Name : mons[0].Name);
         }
+        // Load available languages
+        const langs = await window.go.backend.App.GetAvailableLanguages();
+        if (langs && langs.length > 0) {
+          setLanguages(langs);
+        }
+        const defLang = await window.go.backend.App.GetDefaultLanguage();
+        if (defLang) {
+          setSelectedLang(defLang);
+        }
       }
     } catch (e) {
       console.error('Failed to load devices:', e);
@@ -63,7 +74,7 @@ function App() {
   async function handleStart() {
     try {
       clearTranscript();
-      await window.go.backend.App.StartSession(micDevice, monitorDevice);
+      await window.go.backend.App.StartSession(micDevice, monitorDevice, selectedLang);
     } catch (e) {
       console.error('Failed to start session:', e);
     }
@@ -92,6 +103,18 @@ function App() {
           onMonitorChange={setMonitorDevice}
           disabled={isRecording}
         />
+        {languages.length > 1 && (
+          <select
+            className="lang-selector"
+            value={selectedLang}
+            onChange={e => setSelectedLang(e.target.value)}
+            disabled={isRecording}
+          >
+            {languages.map(l => (
+              <option key={l} value={l}>{l.toUpperCase()}</option>
+            ))}
+          </select>
+        )}
         <div className="spacer" />
         <SessionControls
           isRecording={isRecording}

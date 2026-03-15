@@ -79,20 +79,21 @@ func (a *App) registerHotkeys() error {
 
 // listen handles hotkey and tray events for the meeting toggle.
 func (hk *hotkeyManager) listen() {
+	defaultLang := hk.app.defaultLang()
 	for {
 		select {
 		case _, ok := <-hk.listener.Keydown():
 			if !ok {
 				return
 			}
-			hk.toggleMeeting()
-		case <-hk.app.trayMeetCh:
-			hk.toggleMeeting()
+			hk.toggleMeeting(defaultLang)
+		case lang := <-hk.app.trayMeetCh:
+			hk.toggleMeeting(lang)
 		}
 	}
 }
 
-func (hk *hotkeyManager) toggleMeeting() {
+func (hk *hotkeyManager) toggleMeeting(lang string) {
 	hk.app.mu.Lock()
 	recording := hk.app.recording
 	dictating := hk.app.dictating
@@ -111,7 +112,7 @@ func (hk *hotkeyManager) toggleMeeting() {
 	} else {
 		micDevice := hk.app.cfg.Audio.Device
 		monitorDevice := hk.app.cfg.Meeting.MonitorDevice
-		_ = hk.app.StartSession(micDevice, monitorDevice)
+		_ = hk.app.StartSession(micDevice, monitorDevice, lang)
 		if hk.app.tray != nil {
 			hk.app.tray.setMeetingRecording()
 		}
@@ -122,20 +123,21 @@ func (hk *hotkeyManager) toggleMeeting() {
 
 // listen handles hotkey and tray events for dictation toggle.
 func (dhk *dictationManager) listen() {
+	defaultLang := dhk.app.defaultLang()
 	for {
 		select {
 		case _, ok := <-dhk.listener.Keydown():
 			if !ok {
 				return
 			}
-			dhk.toggleDictation()
-		case <-dhk.app.trayDictCh:
-			dhk.toggleDictation()
+			dhk.toggleDictation(defaultLang)
+		case lang := <-dhk.app.trayDictCh:
+			dhk.toggleDictation(lang)
 		}
 	}
 }
 
-func (dhk *dictationManager) toggleDictation() {
+func (dhk *dictationManager) toggleDictation(lang string) {
 	dhk.app.mu.Lock()
 	recording := dhk.app.recording
 	dictating := dhk.app.dictating
@@ -146,13 +148,13 @@ func (dhk *dictationManager) toggleDictation() {
 	}
 
 	if !dictating {
-		dhk.startDictation()
+		dhk.startDictation(lang)
 	} else {
 		dhk.stopDictation()
 	}
 }
 
-func (dhk *dictationManager) startDictation() {
+func (dhk *dictationManager) startDictation(lang string) {
 	device := dhk.app.cfg.Audio.Device
 	if device == "" {
 		device = "default"
@@ -171,7 +173,7 @@ func (dhk *dictationManager) startDictation() {
 	}
 
 	cfg := live.Config{
-		Engine:            dhk.app.engines.Default(),
+		Engine:            dhk.app.engines.Get(lang),
 		MicCapturer:       audio.NewStreamCapturer(micCapturer, audio.DefaultWindowSize, 128),
 		VADPath:           vadPath,
 		SegmentBufferSize: 32,
