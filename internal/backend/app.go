@@ -472,6 +472,68 @@ func (a *App) GetDefaultLanguage() string {
 	return a.engines.DefaultLang()
 }
 
+// RetranscribeSession re-transcribes a saved session's audio with a different language.
+// Runs in a background goroutine so the UI stays responsive.
+func (a *App) RetranscribeSession(id, lang string) error {
+	a.fixSignals()
+	if a.store == nil {
+		return fmt.Errorf("session store not initialized")
+	}
+	if a.engines == nil {
+		return fmt.Errorf("transcription engine not initialized")
+	}
+
+	sess, err := a.store.Load(id)
+	if err != nil {
+		return fmt.Errorf("loading session: %w", err)
+	}
+	if sess.AudioPath == "" {
+		return fmt.Errorf("session has no saved audio")
+	}
+
+	engine := a.engines.Get(lang)
+
+	go func() {
+		// Decode audio to PCM float32
+		samples, err := session.DecodeToFloat32(sess.AudioPath)
+		if err != nil {
+			fmt.Printf("Re-transcribe: decode error: %v\n", err)
+			wailsRuntime.EventsEmit(a.ctx, "session:retranscribe:error", err.Error())
+			return
+		}
+
+		// Transcribe with VAD segmentation
+		result, err := engine.TranscribeSamples(samples)
+		if err != nil {
+			fmt.Printf("Re-transcribe: transcription error: %v\n", err)
+			wailsRuntime.EventsEmit(a.ctx, "session:retranscribe:error", err.Error())
+			return
+		}
+
+		// Replace segments with re-transcribed result
+		sess.Language = lang
+		sess.Segments = []session.Segment{
+			{
+				ID:       "retranscribed-1",
+				Speaker:  "You",
+				Text:     result.Text,
+				Language: lang,
+			},
+		}
+
+		if err := a.store.Save(sess); err != nil {
+			fmt.Printf("Re-transcribe: save error: %v\n", err)
+			wailsRuntime.EventsEmit(a.ctx, "session:retranscribe:error", err.Error())
+			return
+		}
+
+		fmt.Printf("Re-transcribed session %s in %s\n", id, lang)
+		wailsRuntime.EventsEmit(a.ctx, "session:retranscribed", id)
+	}()
+
+	return nil
+}
+
 // bytesWriter is a simple io.Writer that appends to a byte slice.
 type bytesWriter struct {
 	buf *[]byte
