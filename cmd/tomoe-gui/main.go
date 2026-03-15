@@ -22,9 +22,6 @@ func main() {
 
 	app := backend.NewApp()
 
-	// Start system tray in background
-	backend.StartTrayAsync(app)
-
 	err := wails.Run(&options.App{
 		Title:     "Tomoe — Meeting Transcription",
 		Width:     900,

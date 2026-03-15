@@ -114,6 +114,9 @@ func (a *App) Startup(ctx context.Context) {
 		}
 	}
 
+	// Start system tray (after engines are loaded so language menus are correct)
+	StartTrayAsync(a)
+
 	// Register meeting hotkey
 	if err := a.registerHotkeys(); err != nil {
 		// Non-fatal — hotkey may not be available in all environments
