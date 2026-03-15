@@ -44,21 +44,52 @@ function PlatformBadge({ platform }: { platform?: string }) {
   );
 }
 
+function LanguageBadge({ language }: { language?: string }) {
+  if (!language) return null;
+  return (
+    <span
+      style={{
+        display: 'inline-block',
+        fontSize: 10,
+        fontWeight: 600,
+        padding: '1px 6px',
+        borderRadius: 3,
+        backgroundColor: '#666',
+        color: '#fff',
+        marginLeft: 6,
+        verticalAlign: 'middle',
+      }}
+    >
+      {language.toUpperCase()}
+    </span>
+  );
+}
+
 export default function SessionList({ onExport }: Props) {
   const [sessions, setSessions] = useState<Session[]>([]);
   const [expandedId, setExpandedId] = useState<string | null>(null);
   const [editingId, setEditingId] = useState<string | null>(null);
   const [editTitle, setEditTitle] = useState('');
   const [editPlatform, setEditPlatform] = useState('');
+  const [languages, setLanguages] = useState<string[]>([]);
+  const [retranscribing, setRetranscribing] = useState<string | null>(null);
 
   useEffect(() => {
     loadSessions();
+    loadLanguages();
 
-    // Refresh session list when a new session is saved
-    const cancel = EventsOn('session:saved', () => {
+    // Refresh session list when a new session is saved or retranscribed
+    const cancelSaved = EventsOn('session:saved', () => {
       loadSessions();
     });
-    return () => { cancel(); };
+    const cancelRetranscribed = EventsOn('session:retranscribed', () => {
+      setRetranscribing(null);
+      loadSessions();
+    });
+    const cancelError = EventsOn('session:retranscribe:error', () => {
+      setRetranscribing(null);
+    });
+    return () => { cancelSaved(); cancelRetranscribed(); cancelError(); };
   }, []);
 
   async function loadSessions() {
@@ -69,6 +100,30 @@ export default function SessionList({ onExport }: Props) {
       }
     } catch (e) {
       console.error('Failed to load sessions:', e);
+    }
+  }
+
+  async function loadLanguages() {
+    try {
+      if (window.go?.backend?.App) {
+        const langs = await window.go.backend.App.GetAvailableLanguages();
+        if (langs && langs.length > 1) {
+          setLanguages(langs);
+        }
+      }
+    } catch (e) {
+      console.error('Failed to load languages:', e);
+    }
+  }
+
+  async function handleRetranscribe(id: string, lang: string, e: React.MouseEvent) {
+    e.stopPropagation();
+    setRetranscribing(id);
+    try {
+      await window.go.backend.App.RetranscribeSession(id, lang);
+    } catch (e) {
+      console.error('Failed to retranscribe:', e);
+      setRetranscribing(null);
     }
   }
 
@@ -199,6 +254,7 @@ export default function SessionList({ onExport }: Props) {
                         <div className="session-title">
                           {sess.title}
                           <PlatformBadge platform={sess.platform} />
+                          <LanguageBadge language={sess.language} />
                         </div>
                         <div className="session-meta">
                           {new Date(sess.created_at).toLocaleDateString()}
@@ -219,6 +275,24 @@ export default function SessionList({ onExport }: Props) {
                       >
                         Edit
                       </button>
+                    )}
+                    {languages.length > 0 && sess.audio_path && (
+                      retranscribing === sess.id ? (
+                        <span style={{ fontSize: 11, color: 'var(--text-muted)' }}>
+                          Re-transcribing...
+                        </span>
+                      ) : (
+                        languages.map(lang => (
+                          <button
+                            key={lang}
+                            className="btn btn-secondary btn-sm"
+                            onClick={(e) => handleRetranscribe(sess.id, lang, e)}
+                            title={`Re-transcribe in ${lang.toUpperCase()}`}
+                          >
+                            Re-transcribe ({lang.toUpperCase()})
+                          </button>
+                        ))
+                      )
                     )}
                     <button
                       className="btn btn-secondary btn-sm"
@@ -250,6 +324,11 @@ export default function SessionList({ onExport }: Props) {
                           <span className={`speaker ${seg.speaker.toLowerCase().replace(/\s+/g, '-')}`}>
                             {seg.speaker}:
                           </span>
+                          {seg.language && (
+                            <span style={{ fontSize: 10, color: 'var(--text-muted)', marginRight: 4 }}>
+                              [{seg.language}]
+                            </span>
+                          )}
                           <span className="text">{seg.text}</span>
                         </div>
                       ))
