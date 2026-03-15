@@ -78,12 +78,14 @@ func (d *Daemon) Run(ctx context.Context) error {
 	}
 	defer RemovePID()
 
-	// Start system tray
-	var languages []string
+	// Start system tray — use config for language list (not engine availability)
 	defaultLang := "en"
-	if d.engines != nil {
-		languages = d.engines.Languages()
-		defaultLang = d.engines.DefaultLang()
+	var languages []string
+	if d.cfg.Multilingual.Enabled && len(d.cfg.Multilingual.Languages) > 0 {
+		languages = d.cfg.Multilingual.Languages
+		if d.cfg.Multilingual.DefaultLang != "" {
+			defaultLang = d.cfg.Multilingual.DefaultLang
+		}
 	}
 	d.tray = startDaemonTray(languages, defaultLang)
 	defer d.tray.Close()

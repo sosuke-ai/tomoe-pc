@@ -155,10 +155,10 @@ func (a *App) BeforeClose(ctx context.Context) bool {
 	return false // allow window close → app exit
 }
 
-// defaultLang returns the default language code from the engine set.
+// defaultLang returns the default language code from config.
 func (a *App) defaultLang() string {
-	if a.engines != nil {
-		return a.engines.DefaultLang()
+	if a.cfg != nil && a.cfg.Multilingual.DefaultLang != "" {
+		return a.cfg.Multilingual.DefaultLang
 	}
 	return "en"
 }
@@ -458,12 +458,14 @@ func (a *App) IsRecording() bool {
 }
 
 // GetAvailableLanguages returns the list of configured language codes.
+// Uses config as source of truth (not engine availability) so the UI
+// always shows all configured languages.
 func (a *App) GetAvailableLanguages() []string {
 	a.fixSignals()
-	if a.engines == nil {
-		return []string{"en"}
+	if a.cfg != nil && a.cfg.Multilingual.Enabled && len(a.cfg.Multilingual.Languages) > 0 {
+		return a.cfg.Multilingual.Languages
 	}
-	return a.engines.Languages()
+	return []string{"en"}
 }
 
 // GetDefaultLanguage returns the default language code.
