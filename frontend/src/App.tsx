@@ -26,6 +26,7 @@ function App() {
 
   useEffect(() => {
     loadDevices();
+    loadLanguages();
 
     // Handle in-window keyboard shortcut for meeting toggle.
     // Super+Shift+M (metaKey) or Ctrl+Shift+M (fallback for Linux/WebKitGTK
@@ -56,18 +57,39 @@ function App() {
           const def = mons.find((m: DeviceInfo) => m.IsDefault);
           setMonitorDevice(def ? def.Name : mons[0].Name);
         }
-        // Load available languages
-        const langs = await window.go.backend.App.GetAvailableLanguages();
-        if (langs && langs.length > 0) {
-          setLanguages(langs);
-        }
-        const defLang = await window.go.backend.App.GetDefaultLanguage();
-        if (defLang) {
-          setSelectedLang(defLang);
-        }
       }
     } catch (e) {
       console.error('Failed to load devices:', e);
+    }
+  }
+
+  async function loadLanguages() {
+    try {
+      if (!window.go?.backend?.App) return;
+
+      // Try dedicated language API first
+      try {
+        const langs = await window.go.backend.App.GetAvailableLanguages();
+        if (langs && langs.length > 0) {
+          setLanguages(langs);
+          const defLang = await window.go.backend.App.GetDefaultLanguage();
+          if (defLang) setSelectedLang(defLang);
+          return;
+        }
+      } catch {
+        // Method may not exist in older builds — fall through to config
+      }
+
+      // Fallback: read from config
+      const cfg = await window.go.backend.App.GetConfig();
+      if (cfg?.Multilingual?.Enabled && cfg.Multilingual.Languages?.length > 1) {
+        setLanguages(cfg.Multilingual.Languages);
+        if (cfg.Multilingual.DefaultLang) {
+          setSelectedLang(cfg.Multilingual.DefaultLang);
+        }
+      }
+    } catch (e) {
+      console.error('Failed to load languages:', e);
     }
   }
 
