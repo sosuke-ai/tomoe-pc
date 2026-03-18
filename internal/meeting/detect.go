@@ -149,6 +149,9 @@ func (d *Detector) onSubscribeEvent(facility, eventType int, _ uint32) {
 	case isSourceOutputNew(facility, eventType):
 		// New mic stream — check for meeting
 		go d.checkForMeeting()
+	case isSinkInputNew(facility, eventType):
+		// New speaker stream — check for meeting (mic may have appeared first)
+		go d.checkForMeeting()
 	case isSourceOutputRemove(facility, eventType):
 		// Mic stream removed — check if our tracked meeting ended
 		go d.checkForMeetingEnd()

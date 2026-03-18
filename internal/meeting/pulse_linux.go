@@ -411,6 +411,10 @@ func isSourceOutputRemove(facility, eventType int) bool {
 	return facility == int(paFacilitySourceOutput) && eventType == int(paEventRemove)
 }
 
+func isSinkInputNew(facility, eventType int) bool {
+	return facility == int(paFacilitySinkInput) && eventType == int(paEventNew)
+}
+
 func isSinkInputRemove(facility, eventType int) bool {
 	return facility == int(paFacilitySinkInput) && eventType == int(paEventRemove)
 }

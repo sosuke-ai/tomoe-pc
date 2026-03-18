@@ -16,8 +16,10 @@ type daemonTray struct {
 	meetingCh   chan string // carries language code; "" = stop
 	ready       atomic.Bool
 
-	mDictation *systray.MenuItem
-	mMeeting   *systray.MenuItem
+	mDictation     *systray.MenuItem // start item (with sub-menus in multilingual mode)
+	mMeeting       *systray.MenuItem // start item (with sub-menus in multilingual mode)
+	mStopDictation *systray.MenuItem // flat stop item (nil in single-lang mode)
+	mStopMeeting   *systray.MenuItem // flat stop item (nil in single-lang mode)
 }
 
 // startDaemonTray starts the system tray in a goroutine.
@@ -85,7 +87,8 @@ func (t *daemonTray) initSingleLang(lang string) {
 	}()
 }
 
-// initMultilingual creates parent items with per-language sub-items.
+// initMultilingual creates parent items with per-language sub-items for start,
+// and flat stop items that are shown only when recording is active.
 func (t *daemonTray) initMultilingual(languages []string) {
 	t.mDictation = systray.AddMenuItem("Dictation", "Start dictation")
 	for _, lang := range languages {
@@ -103,6 +106,18 @@ func (t *daemonTray) initMultilingual(languages []string) {
 		}(lang, sub)
 	}
 
+	// Flat stop item — hidden until dictation is active
+	t.mStopDictation = systray.AddMenuItem("Stop Dictation", "Stop dictation")
+	t.mStopDictation.Hide()
+	go func() {
+		for range t.mStopDictation.ClickedCh {
+			select {
+			case t.dictationCh <- "":
+			default:
+			}
+		}
+	}()
+
 	t.mMeeting = systray.AddMenuItem("Meeting", "Start meeting recording")
 	for _, lang := range languages {
 		sub := t.mMeeting.AddSubMenuItem(
@@ -118,6 +133,18 @@ func (t *daemonTray) initMultilingual(languages []string) {
 			}
 		}(lang, sub)
 	}
+
+	// Flat stop item — hidden until meeting is active
+	t.mStopMeeting = systray.AddMenuItem("Stop Meeting", "Stop meeting recording")
+	t.mStopMeeting.Hide()
+	go func() {
+		for range t.mStopMeeting.ClickedCh {
+			select {
+			case t.meetingCh <- "":
+			default:
+			}
+		}
+	}()
 }
 
 func (t *daemonTray) SetIdle() {
@@ -127,12 +154,16 @@ func (t *daemonTray) SetIdle() {
 	systray.SetTooltip("Tomoe — Ready")
 	systray.SetIcon(daemonTrayIcon)
 	if t.mDictation != nil {
-		t.mDictation.SetTitle("Dictation")
 		t.mDictation.Show()
 	}
+	if t.mStopDictation != nil {
+		t.mStopDictation.Hide()
+	}
 	if t.mMeeting != nil {
-		t.mMeeting.SetTitle("Meeting")
 		t.mMeeting.Show()
+	}
+	if t.mStopMeeting != nil {
+		t.mStopMeeting.Hide()
 	}
 }
 
@@ -142,8 +173,12 @@ func (t *daemonTray) SetDictating() {
 	}
 	systray.SetTooltip("Tomoe — Dictating...")
 	systray.SetIcon(daemonTrayIconRecording)
+	// Hide start items, show flat stop
 	if t.mDictation != nil {
-		t.mDictation.SetTitle("Stop Dictation")
+		t.mDictation.Hide()
+	}
+	if t.mStopDictation != nil {
+		t.mStopDictation.Show()
 	}
 	if t.mMeeting != nil {
 		t.mMeeting.Hide()
@@ -156,8 +191,12 @@ func (t *daemonTray) SetMeetingRecording() {
 	}
 	systray.SetTooltip("Tomoe — Meeting Recording...")
 	systray.SetIcon(daemonTrayIconRecording)
+	// Hide start items, show flat stop
 	if t.mMeeting != nil {
-		t.mMeeting.SetTitle("Stop Meeting")
+		t.mMeeting.Hide()
+	}
+	if t.mStopMeeting != nil {
+		t.mStopMeeting.Show()
 	}
 	if t.mDictation != nil {
 		t.mDictation.Hide()

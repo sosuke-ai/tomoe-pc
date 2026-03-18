@@ -109,13 +109,16 @@ func (hk *hotkeyManager) toggleMeeting(lang string) {
 		if hk.app.tray != nil {
 			hk.app.tray.setIdle()
 		}
-	} else {
+	} else if lang != "" {
+		// Only start if a language is specified (empty = stop-only signal from tray)
 		micDevice := hk.app.cfg.Audio.Device
 		monitorDevice := hk.app.cfg.Meeting.MonitorDevice
 		_ = hk.app.StartSession(micDevice, monitorDevice, lang)
 		if hk.app.tray != nil {
 			hk.app.tray.setMeetingRecording()
 		}
+	} else {
+		return
 	}
 
 	wailsRuntime.EventsEmit(hk.app.ctx, "hotkey:toggled", !recording)
@@ -147,10 +150,11 @@ func (dhk *dictationManager) toggleDictation(lang string) {
 		return // ignore dictation while meeting active
 	}
 
-	if !dictating {
-		dhk.startDictation(lang)
-	} else {
+	if dictating {
 		dhk.stopDictation()
+	} else if lang != "" {
+		// Only start if a language is specified (empty = stop-only signal from tray)
+		dhk.startDictation(lang)
 	}
 }
 
