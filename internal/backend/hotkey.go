@@ -11,6 +11,7 @@ import (
 	"github.com/sosuke-ai/tomoe-pc/internal/clipboard"
 	"github.com/sosuke-ai/tomoe-pc/internal/hotkey"
 	"github.com/sosuke-ai/tomoe-pc/internal/live"
+	"github.com/sosuke-ai/tomoe-pc/internal/meeting"
 	"github.com/sosuke-ai/tomoe-pc/internal/session"
 )
 
@@ -77,23 +78,36 @@ func (a *App) registerHotkeys() error {
 	return nil
 }
 
-// listen handles hotkey and tray events for the meeting toggle.
+// listen handles hotkey, tray, and auto-detect events for the meeting toggle.
 func (hk *hotkeyManager) listen() {
 	defaultLang := hk.app.defaultLang()
+
+	// Get detector events channel (nil if auto-detect disabled)
+	var detectCh <-chan meeting.MeetingEvent
+	if hk.app.detector != nil {
+		detectCh = hk.app.detector.Events()
+	}
+
 	for {
 		select {
 		case _, ok := <-hk.listener.Keydown():
 			if !ok {
 				return
 			}
-			hk.toggleMeeting(defaultLang)
+			hk.toggleMeeting(defaultLang, "")
 		case lang := <-hk.app.trayMeetCh:
-			hk.toggleMeeting(lang)
+			hk.toggleMeeting(lang, "")
+		case evt, ok := <-detectCh:
+			if !ok {
+				detectCh = nil
+				continue
+			}
+			hk.handleDetectEvent(evt, defaultLang)
 		}
 	}
 }
 
-func (hk *hotkeyManager) toggleMeeting(lang string) {
+func (hk *hotkeyManager) toggleMeeting(lang, platform string) {
 	hk.app.mu.Lock()
 	recording := hk.app.recording
 	dictating := hk.app.dictating
@@ -113,7 +127,7 @@ func (hk *hotkeyManager) toggleMeeting(lang string) {
 		// Only start if a language is specified (empty = stop-only signal from tray)
 		micDevice := hk.app.cfg.Audio.Device
 		monitorDevice := hk.app.cfg.Meeting.MonitorDevice
-		_ = hk.app.StartSession(micDevice, monitorDevice, lang)
+		_ = hk.app.StartSession(micDevice, monitorDevice, lang, platform)
 		if hk.app.tray != nil {
 			hk.app.tray.setMeetingRecording()
 		}
@@ -122,6 +136,46 @@ func (hk *hotkeyManager) toggleMeeting(lang string) {
 	}
 
 	wailsRuntime.EventsEmit(hk.app.ctx, "hotkey:toggled", !recording)
+}
+
+// handleDetectEvent processes meeting auto-detect events.
+func (hk *hotkeyManager) handleDetectEvent(evt meeting.MeetingEvent, defaultLang string) {
+	hk.app.mu.Lock()
+	recording := hk.app.recording
+	dictating := hk.app.dictating
+	hk.app.mu.Unlock()
+
+	switch evt.Type {
+	case meeting.MeetingStarted:
+		if recording || dictating {
+			return // already busy
+		}
+		platform := string(evt.Platform)
+		micDevice := hk.app.cfg.Audio.Device
+		monitorDevice := hk.app.cfg.Meeting.MonitorDevice
+		if err := hk.app.StartSession(micDevice, monitorDevice, defaultLang, platform); err != nil {
+			fmt.Printf("Auto-detect meeting start failed: %v\n", err)
+			return
+		}
+		if hk.app.tray != nil {
+			hk.app.tray.setMeetingRecording()
+		}
+		msg := fmt.Sprintf("%s meeting detected — recording started", platform)
+		fmt.Println(msg)
+		wailsRuntime.EventsEmit(hk.app.ctx, "meeting:autodetected", platform)
+		wailsRuntime.EventsEmit(hk.app.ctx, "hotkey:toggled", true)
+
+	case meeting.MeetingStopped:
+		if !recording {
+			return
+		}
+		_, _ = hk.app.StopSession()
+		if hk.app.tray != nil {
+			hk.app.tray.setIdle()
+		}
+		fmt.Println("Auto-detected meeting ended — recording stopped")
+		wailsRuntime.EventsEmit(hk.app.ctx, "hotkey:toggled", false)
+	}
 }
 
 // listen handles hotkey and tray events for dictation toggle.

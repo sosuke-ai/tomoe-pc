@@ -15,6 +15,7 @@ import (
 	"github.com/sosuke-ai/tomoe-pc/internal/gpu"
 	"github.com/sosuke-ai/tomoe-pc/internal/hotkey"
 	"github.com/sosuke-ai/tomoe-pc/internal/live"
+	"github.com/sosuke-ai/tomoe-pc/internal/meeting"
 	"github.com/sosuke-ai/tomoe-pc/internal/models"
 	"github.com/sosuke-ai/tomoe-pc/internal/session"
 	"github.com/sosuke-ai/tomoe-pc/internal/sigfix"
@@ -33,6 +34,7 @@ type App struct {
 	coordinator *live.Coordinator
 	store       *session.Store
 	modelMgr    *models.Manager
+	detector    *meeting.Detector
 
 	mu              sync.Mutex
 	recording       bool // meeting recording in progress
@@ -114,6 +116,15 @@ func (a *App) Startup(ctx context.Context) {
 		}
 	}
 
+	// Start meeting auto-detector if enabled
+	if cfg.Meeting.AutoDetect {
+		a.detector = meeting.NewDetector()
+		if err := a.detector.Start(ctx); err != nil {
+			fmt.Printf("Warning: meeting auto-detect unavailable: %v\n", err)
+			a.detector = nil
+		}
+	}
+
 	// Start system tray (after engines are loaded so language menus are correct)
 	StartTrayAsync(a)
 
@@ -141,6 +152,9 @@ func (a *App) Shutdown(ctx context.Context) {
 	}
 	if dictCancel != nil {
 		dictCancel()
+	}
+	if a.detector != nil {
+		a.detector.Stop()
 	}
 	if a.engines != nil {
 		a.engines.Close()
@@ -181,7 +195,8 @@ func (a *App) ListMonitorSources() ([]audio.DeviceInfo, error) {
 }
 
 // StartSession begins a new live transcription session.
-func (a *App) StartSession(micDevice, monitorDevice, lang string) error {
+// platform is optional — set by auto-detect for meeting title (e.g. "Teams").
+func (a *App) StartSession(micDevice, monitorDevice, lang, platform string) error {
 	a.fixSignals()
 	a.mu.Lock()
 	defer a.mu.Unlock()
@@ -257,9 +272,15 @@ func (a *App) StartSession(micDevice, monitorDevice, lang string) error {
 		sources = append(sources, "monitor")
 	}
 
+	title := fmt.Sprintf("Session %s", time.Now().Format("2006-01-02 15:04"))
+	if platform != "" {
+		title = fmt.Sprintf("%s Meeting %s", platform, time.Now().Format("2006-01-02 15:04"))
+	}
+
 	a.currentSess = &session.Session{
 		ID:        uuid.New().String(),
-		Title:     fmt.Sprintf("Session %s", time.Now().Format("2006-01-02 15:04")),
+		Title:     title,
+		Platform:  platform,
 		Language:  lang,
 		CreatedAt: time.Now(),
 		Sources:   sources,
