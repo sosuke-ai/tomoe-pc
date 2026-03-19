@@ -218,12 +218,15 @@ clipboard = true
 	if !cfg.Transcription.GPUEnabled {
 		t.Error("GPUEnabled should be true")
 	}
-	// Meeting section should have zero values (not loaded)
-	if cfg.Meeting.DefaultSources != "" {
-		t.Errorf("Meeting.DefaultSources = %q, want empty (not in Phase 1 config)", cfg.Meeting.DefaultSources)
+	// Meeting section absent from TOML — should get defaults (not zero values)
+	if cfg.Meeting.DefaultSources != "both" {
+		t.Errorf("Meeting.DefaultSources = %q, want %q (default)", cfg.Meeting.DefaultSources, "both")
 	}
-	if cfg.Meeting.SpeakerThreshold != 0 {
-		t.Errorf("Meeting.SpeakerThreshold = %v, want 0 (not in Phase 1 config)", cfg.Meeting.SpeakerThreshold)
+	if cfg.Meeting.SpeakerThreshold != 0.65 {
+		t.Errorf("Meeting.SpeakerThreshold = %v, want 0.65 (default)", cfg.Meeting.SpeakerThreshold)
+	}
+	if !cfg.Meeting.AutoDetect {
+		t.Error("Meeting.AutoDetect = false, want true (default)")
 	}
 }
 
@@ -322,9 +325,9 @@ clipboard = true
 	if !cfg.Output.Clipboard {
 		t.Error("Output.Clipboard = false, want true")
 	}
-	// SilenceTimeout should be zero value since it's absent from TOML
-	if cfg.Output.SilenceTimeout != 0 {
-		t.Errorf("Output.SilenceTimeout = %v, want 0 (absent from old config)", cfg.Output.SilenceTimeout)
+	// SilenceTimeout absent from TOML — should get default (not zero)
+	if cfg.Output.SilenceTimeout != 5.0 {
+		t.Errorf("Output.SilenceTimeout = %v, want 5.0 (default)", cfg.Output.SilenceTimeout)
 	}
 }
 
