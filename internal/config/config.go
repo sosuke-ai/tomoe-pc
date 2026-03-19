@@ -162,18 +162,19 @@ func Exists() bool {
 }
 
 // Load reads and parses the config file at the given path.
+// Starts from DefaultConfig so fields absent from the file retain their defaults.
 func Load(path string) (*Config, error) {
 	data, err := os.ReadFile(path)
 	if err != nil {
 		return nil, fmt.Errorf("reading config: %w", err)
 	}
 
-	var cfg Config
-	if err := toml.Unmarshal(data, &cfg); err != nil {
+	cfg := DefaultConfig()
+	if err := toml.Unmarshal(data, cfg); err != nil {
 		return nil, fmt.Errorf("parsing config: %w", err)
 	}
 
-	return &cfg, nil
+	return cfg, nil
 }
 
 // Save writes the config to the given path, creating parent directories as needed.

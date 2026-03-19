@@ -449,63 +449,76 @@ func (d *Daemon) stopMeeting(ms *meetingState) {
 	ms.coordinator.Stop()
 	<-ms.done
 
-	// Update tray immediately so the user sees feedback before MP3 encoding
+	// Update tray immediately so the user sees feedback
 	d.tray.SetIdle()
 	// Re-grab hotkeys — audio/tray operations can interfere with X11 grabs
 	hotkey.ReGrabAll()
 
-	// Finalize session
+	// Finalize session timestamps synchronously (lightweight)
 	duration := time.Since(ms.session.CreatedAt)
 	ms.session.EndedAt = time.Now()
 	ms.session.Duration = duration.Seconds()
 	segCount := len(ms.session.Segments)
 
-	if d.store != nil {
-		// Save audio as M4A
-		var tracks [][]float32
-		if ms.coordinator.IsDualSource() {
-			mic := ms.coordinator.MicSamples()
-			mon := ms.coordinator.MonitorSamples()
-			if len(mic) > 0 && len(mon) > 0 {
-				tracks = [][]float32{mic, mon}
-			}
+	msg := fmt.Sprintf("Meeting stopped — %d segments, %s (saving...)", segCount, duration.Round(time.Second))
+	_ = d.svc.Notifier.Send("Tomoe", msg)
+	fmt.Println(msg)
+
+	// Save audio + diarization + session in background so the main loop
+	// can immediately handle new events (hotkeys, auto-detect, tray).
+	go d.saveMeetingAsync(ms)
+}
+
+// saveMeetingAsync encodes audio, runs post-processing, and saves the session.
+func (d *Daemon) saveMeetingAsync(ms *meetingState) {
+	if d.store == nil {
+		return
+	}
+
+	// Save audio as M4A
+	var tracks [][]float32
+	if ms.coordinator.IsDualSource() {
+		mic := ms.coordinator.MicSamples()
+		mon := ms.coordinator.MonitorSamples()
+		if len(mic) > 0 && len(mon) > 0 {
+			tracks = [][]float32{mic, mon}
+		}
+	} else {
+		samples := ms.coordinator.AudioSamples()
+		if len(samples) > 0 {
+			tracks = [][]float32{samples}
+		}
+	}
+	if len(tracks) > 0 {
+		audioPath := filepath.Join(config.SessionDir(), ms.session.ID, "audio.m4a")
+		if err := session.SaveAudioM4A(tracks, 16000, audioPath); err == nil {
+			ms.session.AudioPath = audioPath
 		} else {
-			samples := ms.coordinator.AudioSamples()
-			if len(samples) > 0 {
-				tracks = [][]float32{samples}
-			}
-		}
-		if len(tracks) > 0 {
-			audioPath := filepath.Join(config.SessionDir(), ms.session.ID, "audio.m4a")
-			if err := session.SaveAudioM4A(tracks, 16000, audioPath); err == nil {
-				ms.session.AudioPath = audioPath
-			} else {
-				fmt.Printf("Error saving audio: %v\n", err)
-			}
-		}
-
-		// Post-processing: run neural diarization to refine speaker labels
-		if d.modelStatus != nil && d.modelStatus.DiarizationReady() {
-			count, err := session.ReidentifyByDiarization(ms.session, session.DiarizeConfig{
-				SegmentationModelPath: d.modelStatus.SpeakerSegmentationPath,
-				EmbeddingModelPath:    d.modelStatus.SpeakerEmbeddingPath,
-				Threshold:             1.1,
-				MergeThreshold:        0.55,
-				UseGPU:                d.cfg.Transcription.GPUEnabled,
-			})
-			if err != nil {
-				fmt.Printf("Warning: post-recording diarization failed: %v\n", err)
-			} else if count > 0 {
-				fmt.Printf("Post-processing: refined speaker labels for %d segments\n", count)
-			}
-		}
-
-		if err := d.store.Save(ms.session); err != nil {
-			fmt.Printf("Error saving session: %v\n", err)
+			fmt.Printf("Error saving audio: %v\n", err)
 		}
 	}
 
-	msg := fmt.Sprintf("Meeting saved — %d segments, %s", segCount, duration.Round(time.Second))
+	// Post-processing: run neural diarization to refine speaker labels
+	if d.modelStatus != nil && d.modelStatus.DiarizationReady() {
+		count, err := session.ReidentifyByDiarization(ms.session, session.DiarizeConfig{
+			SegmentationModelPath: d.modelStatus.SpeakerSegmentationPath,
+			EmbeddingModelPath:    d.modelStatus.SpeakerEmbeddingPath,
+			Threshold:             1.1,
+			MergeThreshold:        0.55,
+			UseGPU:                d.cfg.Transcription.GPUEnabled,
+		})
+		if err != nil {
+			fmt.Printf("Warning: post-recording diarization failed: %v\n", err)
+		} else if count > 0 {
+			fmt.Printf("Post-processing: refined speaker labels for %d segments\n", count)
+		}
+	}
+
+	if err := d.store.Save(ms.session); err != nil {
+		fmt.Printf("Error saving session: %v\n", err)
+	}
+
+	msg := fmt.Sprintf("Meeting saved — %s", ms.session.Title)
 	_ = d.svc.Notifier.Send("Tomoe", msg)
 	fmt.Println(msg)
 }
