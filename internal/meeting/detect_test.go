@@ -2,6 +2,7 @@ package meeting
 
 import (
 	"testing"
+	"time"
 )
 
 func TestMatchPlatformFromTitle(t *testing.T) {
@@ -146,5 +147,104 @@ func TestPlatformConstants(t *testing.T) {
 		if p == "" {
 			t.Error("platform constant should not be empty")
 		}
+	}
+}
+
+func TestEventTypeHelpers(t *testing.T) {
+	facSink := int(paFacilitySinkInput)
+	facSource := int(paFacilitySourceOutput)
+	evtNew := int(paEventNew)
+	evtRemove := int(paEventRemove)
+
+	tests := []struct {
+		name     string
+		fn       func(int, int) bool
+		facility int
+		evtType  int
+		want     bool
+	}{
+		{"isSourceOutputNew/match", isSourceOutputNew, facSource, evtNew, true},
+		{"isSourceOutputNew/wrong_facility", isSourceOutputNew, facSink, evtNew, false},
+		{"isSourceOutputNew/wrong_type", isSourceOutputNew, facSource, evtRemove, false},
+		{"isSourceOutputRemove/match", isSourceOutputRemove, facSource, evtRemove, true},
+		{"isSourceOutputRemove/wrong_type", isSourceOutputRemove, facSource, evtNew, false},
+		{"isSinkInputNew/match", isSinkInputNew, facSink, evtNew, true},
+		{"isSinkInputNew/wrong_facility", isSinkInputNew, facSource, evtNew, false},
+		{"isSinkInputNew/wrong_type", isSinkInputNew, facSink, evtRemove, false},
+		{"isSinkInputRemove/match", isSinkInputRemove, facSink, evtRemove, true},
+		{"isSinkInputRemove/wrong_facility", isSinkInputRemove, facSource, evtRemove, false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := tt.fn(tt.facility, tt.evtType)
+			if got != tt.want {
+				t.Errorf("got %v, want %v", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestOnSubscribeEventDispatch(t *testing.T) {
+	// Verify that onSubscribeEvent doesn't panic and respects the stopped flag.
+	d := NewDetector()
+
+	// Should not panic when called with any event type
+	d.onSubscribeEvent(int(paFacilitySourceOutput), int(paEventNew), 0)
+	d.onSubscribeEvent(int(paFacilitySinkInput), int(paEventNew), 0)
+	d.onSubscribeEvent(int(paFacilitySourceOutput), int(paEventRemove), 0)
+	d.onSubscribeEvent(int(paFacilitySinkInput), int(paEventRemove), 0)
+
+	// After marking stopped, events should be ignored
+	d.mu.Lock()
+	d.stopped = true
+	d.mu.Unlock()
+
+	// Should return immediately without spawning goroutines
+	d.onSubscribeEvent(int(paFacilitySourceOutput), int(paEventNew), 0)
+	d.onSubscribeEvent(int(paFacilitySinkInput), int(paEventNew), 0)
+}
+
+func TestDetectorEventChannel(t *testing.T) {
+	d := NewDetector()
+	ch := d.Events()
+	if ch == nil {
+		t.Fatal("Events() returned nil channel")
+	}
+
+	// Channel should be buffered (cap 4)
+	if cap(ch) != 4 {
+		t.Errorf("Events() channel capacity = %d, want 4", cap(ch))
+	}
+}
+
+func TestCheckForMeetingSkipsWhenActive(t *testing.T) {
+	d := NewDetector()
+
+	// Set an active meeting — checkForMeeting should return early
+	d.mu.Lock()
+	d.active = &trackedMeeting{pid: 12345, platform: PlatformTeams}
+	d.mu.Unlock()
+
+	// Should not panic or block
+	d.checkForMeeting()
+}
+
+func TestCheckForMeetingEndNoActive(t *testing.T) {
+	d := NewDetector()
+
+	// No active meeting — checkForMeetingEnd should return early
+	d.checkForMeetingEnd()
+}
+
+func TestDebounceDelay(t *testing.T) {
+	if debounceDelay != 2*time.Second {
+		t.Errorf("debounceDelay = %v, want 2s", debounceDelay)
+	}
+}
+
+func TestHealthCheckInterval(t *testing.T) {
+	if healthCheckInterval != 30*time.Second {
+		t.Errorf("healthCheckInterval = %v, want 30s", healthCheckInterval)
 	}
 }

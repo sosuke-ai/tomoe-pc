@@ -322,7 +322,13 @@ func pulseEventLoop(ctx context.Context) {
 		// busy-spinning at 100% CPU with non-blocking iterate(0).
 		ret := C.pulse_iterate_once(1)
 		if ret < 0 {
-			fmt.Println("meeting: PulseAudio mainloop error, stopping")
+			// Negative return is expected when pa_mainloop_quit is
+			// called during shutdown; only log if not shutting down.
+			select {
+			case <-ctx.Done():
+			default:
+				fmt.Println("meeting: PulseAudio mainloop error, stopping")
+			}
 			return
 		}
 	}
