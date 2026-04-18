@@ -1,6 +1,6 @@
 # Tomoe PC
 
-Local-first speech-to-text desktop application for Linux. Captures microphone and system audio, transcribes locally using NVIDIA Parakeet TDT 0.6B v3 (INT8, 25 languages) via sherpa-onnx, and delivers text to clipboard or a live GUI transcript with speaker identification.
+The Linux desktop client for the [Tomoe](https://github.com/sosuke-ai/tomoe) system — a local-first speech-to-text suite. Captures microphone and system audio, transcribes locally using NVIDIA Parakeet TDT 0.6B v3 (INT8, 25 languages) via sherpa-onnx, and delivers text to clipboard or a live GUI transcript with speaker identification.
 
 ## Features
 
@@ -10,8 +10,9 @@ Local-first speech-to-text desktop application for Linux. Captures microphone an
 - **Automatic meeting detection** — PulseAudio monitoring detects when a meeting app uses both mic and speaker, auto-starts/stops recording with platform identification (Teams, Meet, Zoom, Webex, Slack)
 - **Session management** — save, load, export (Markdown, plain text, SRT), delete sessions with recorded audio (M4A), editable title and platform metadata
 - **GPU acceleration** — NVIDIA CUDA via ONNX Runtime with automatic CPU fallback
-- **25+ languages** — Parakeet TDT v3 INT8 (25 European languages) + Bengali via Zipformer, with per-segment language detection via Whisper tiny
+- **25+ languages** — Parakeet TDT v3 INT8 (25 European languages) + Bengali via Zipformer, with manual language selection via tray sub-menus, GUI dropdown, or session re-transcription
 - **Hotword boosting** — configurable hotwords file to fix misrecognitions (e.g., "claude", "haiku") via modified beam search
+- **Session re-transcription** — re-process any saved session's audio to re-identify speakers via diarization
 - **System tray** — background operation with AppIndicator3 tray icon
 
 ## Quick Start
@@ -62,17 +63,20 @@ make clean            # Remove build artifacts
 ## CLI Commands
 
 ```
-tomoe                     # Start daemon (auto-init on first run)
-tomoe start               # Alias for above
-tomoe init                # Manual system detection + config generation + model download
-tomoe stop                # Stop daemon
-tomoe status              # Show daemon/system/model/GPU info
-tomoe transcribe <file>   # Transcribe audio file (WAV, FLAC, OGG)
-tomoe model download                # Force re-download base models
-tomoe model download --multilingual # Download base + lang-id + Bengali models
-tomoe model status                  # Show model info + integrity check
-tomoe devices             # List audio input devices
-tomoe config              # Print current config
+tomoe                                 # Start daemon (auto-init on first run)
+tomoe start                           # Alias for above
+tomoe init                            # Manual system detection + config generation + model download
+tomoe stop                            # Stop daemon
+tomoe status                          # Show daemon/system/model/GPU info
+tomoe version                         # Print version
+tomoe transcribe <file>               # Transcribe audio file (WAV, FLAC, OGG, MP3, M4A)
+tomoe model download                  # Force re-download base models
+tomoe model download --multilingual   # Download base + Bengali models
+tomoe model status                    # Show model info + integrity check
+tomoe session list                    # List all saved sessions
+tomoe session re-transcribe <id>      # Re-process a session's audio (re-identify speakers)
+tomoe devices                         # List audio input devices
+tomoe config                          # Print current config
 ```
 
 ## Default Hotkeys
@@ -102,11 +106,12 @@ model_path = '~/.local/share/tomoe/models'
 decoding_method = 'greedy_search'  # or 'modified_beam_search' for hotwords
 hotwords_file = ''                 # path to hotwords.txt (one word/phrase per line)
 hotwords_score = 1.5               # boost score for hotwords
+max_active_paths = 4               # beam width for modified_beam_search
 
 [multilingual]
 enabled = false
 languages = ['en']        # add 'bn' for Bengali
-default_lang = 'en'
+default_lang = 'en'       # language used when a hotkey fires without explicit language
 
 [output]
 auto_paste = true
@@ -138,8 +143,8 @@ tomoe-pc/
 │   ├── daemon/             # CLI daemon orchestration
 │   ├── gpu/                # GPU detection
 │   ├── hotkey/             # Global hotkey (X11 key grabs)
-│   ├── langid/             # Spoken language identification (Whisper tiny)
-│   ├── live/               # Live transcription coordinator
+│   ├── langid/             # Spoken language identification (Whisper tiny, optional)
+│   ├── live/               # Live transcription coordinator + per-source pipelines
 │   ├── meeting/            # Automatic meeting detection (PulseAudio cgo)
 │   ├── models/             # Model download and management
 │   ├── notify/             # Desktop notifications
@@ -157,24 +162,25 @@ tomoe-pc/
 ```
 Go binary → cgo → sherpa-onnx C API → ONNX Runtime (CUDA EP / CPU EP)
   → Parakeet TDT 0.6B v3 INT8 (encoder + decoder + joiner, 25 languages)
-  → Whisper tiny INT8 (~98MB, language identification)
-  → Bengali Zipformer transducer (~87MB, streaming)
+  → Bengali Zipformer transducer (~87MB, streaming via OnlineRecognizer)
   → Silero VAD (~2MB)
   → 3D-Speaker embedding model (~25MB)
 ```
+
+Language is selected manually (tray sub-menus, GUI dropdown, or per-session at re-transcribe time); no automatic language detection.
 
 ### Data Flow (Meeting Mode)
 
 ```
 PulseAudio subscribe ──→ source-output + sink-input from same PID? ──→ MeetingStarted
                                                                               │
-Mic Capturer → StreamCapturer → VAD → Lang-ID → Route → Transcribe → Segment{speaker:"You",lang:"en"}
+Mic Capturer → StreamCapturer → VAD → Transcribe(lang) → Segment{speaker:"You",lang:"en"}
                                                                           │
-Monitor Capturer → StreamCapturer → VAD → Lang-ID → Route → Embed → Cluster → Segment{speaker:"Person N",lang:"bn"}
-                                            │                       │
-                                      Transcribe              EventsEmit
-                                                                    │
-                                                             React Frontend
+Monitor Capturer → StreamCapturer → VAD → Transcribe(lang) → Embed → Cluster → Segment{speaker:"Person N",lang:"bn"}
+                                                                                │
+                                                                         Wails EventsEmit
+                                                                                │
+                                                                         React Frontend
 ```
 
 ## Data Paths
@@ -185,6 +191,11 @@ Monitor Capturer → StreamCapturer → VAD → Lang-ID → Route → Embed → 
 | `~/.local/share/tomoe/models/` | ONNX models |
 | `~/.local/share/tomoe/sessions/` | Saved sessions (JSON + M4A) |
 | `~/.local/share/tomoe/lib/` | GPU libraries (if installed) |
+
+## Roadmap
+
+- **Cross-platform support** — extend beyond Linux to Windows and macOS (audio capture, hotkeys, tray, and meeting detection abstractions)
+- **Post-meeting delivery hooks** — on meeting completion, push the transcript (and optionally the recording) to an external destination: pipe into a user-defined CLI command, POST to a configurable web endpoint, or both
 
 ## License
 
