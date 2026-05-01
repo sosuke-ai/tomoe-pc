@@ -34,7 +34,7 @@ type App struct {
 	coordinator *live.Coordinator
 	store       *session.Store
 	modelMgr    *models.Manager
-	detector    *meeting.Detector
+	detector    meeting.Detector
 
 	mu              sync.Mutex
 	recording       bool // meeting recording in progress

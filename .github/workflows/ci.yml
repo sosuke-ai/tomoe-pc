@@ -2,7 +2,7 @@ name: CI
 
 on:
   push:
-    branches: [main, phase-1, phase-2]
+    branches: [main, phase-1, phase-2, feature/macos-port]
   pull_request:
     branches: [main]
 
@@ -78,3 +78,32 @@ jobs:
         uses: golangci/golangci-lint-action@v7
         with:
           version: v2.11.3
+
+  darwin-build:
+    runs-on: macos-14
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: "1.22"
+
+      - name: Cross-compile abstraction packages (CGO=0)
+        run: make build-darwin
+
+      - name: Build macOS spike binary (CGO=1)
+        run: |
+          go build -o tomoe-mac-spike \
+            -ldflags="-X main.Version=$(git rev-parse --short HEAD)" \
+            ./cmd/macos-spike
+          ls -la tomoe-mac-spike
+          file tomoe-mac-spike
+
+      - name: Upload spike artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: tomoe-mac-spike-arm64
+          path: tomoe-mac-spike
+          retention-days: 30

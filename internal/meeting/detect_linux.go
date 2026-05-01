@@ -1,3 +1,5 @@
+//go:build linux
+
 package meeting
 
 import (
@@ -6,32 +8,6 @@ import (
 	"sync"
 	"time"
 )
-
-// Platform identifies the meeting application.
-type Platform string
-
-const (
-	PlatformTeams   Platform = "Teams"
-	PlatformMeet    Platform = "Meet"
-	PlatformZoom    Platform = "Zoom"
-	PlatformWebex   Platform = "Webex"
-	PlatformSlack   Platform = "Slack"
-	PlatformUnknown Platform = "Unknown"
-)
-
-// EventType distinguishes start from stop events.
-type EventType int
-
-const (
-	MeetingStarted EventType = iota
-	MeetingStopped
-)
-
-// MeetingEvent represents a detected meeting start or stop.
-type MeetingEvent struct {
-	Type     EventType
-	Platform Platform
-}
 
 // streamInfo holds PulseAudio stream metadata.
 type streamInfo struct {
@@ -46,10 +22,10 @@ type trackedMeeting struct {
 	platform Platform
 }
 
-// Detector monitors PulseAudio streams to detect meeting applications.
+// pulseDetector monitors PulseAudio streams to detect meeting applications.
 // It watches for simultaneous source-output (mic) and sink-input (speaker)
 // from the same process, which reliably indicates an active meeting call.
-type Detector struct {
+type pulseDetector struct {
 	events chan MeetingEvent
 
 	mu      sync.Mutex
@@ -64,21 +40,21 @@ type Detector struct {
 	cancel context.CancelFunc
 }
 
-// NewDetector creates a new meeting detector.
-func NewDetector() *Detector {
-	return &Detector{
+// newDetector creates a Linux PulseAudio-based meeting detector.
+func newDetector() Detector {
+	return &pulseDetector{
 		events: make(chan MeetingEvent, 4),
 	}
 }
 
 // Events returns a channel that emits MeetingStarted and MeetingStopped events.
-func (d *Detector) Events() <-chan MeetingEvent {
+func (d *pulseDetector) Events() <-chan MeetingEvent {
 	return d.events
 }
 
 // Start begins monitoring PulseAudio streams. Blocks until ctx is cancelled
 // or Stop() is called. Safe to call from a goroutine.
-func (d *Detector) Start(ctx context.Context) error {
+func (d *pulseDetector) Start(ctx context.Context) error {
 	d.mu.Lock()
 	ctx, d.cancel = context.WithCancel(ctx)
 	d.mu.Unlock()
@@ -109,7 +85,7 @@ func (d *Detector) Start(ctx context.Context) error {
 }
 
 // Stop stops the detector and cleans up resources.
-func (d *Detector) Stop() {
+func (d *pulseDetector) Stop() {
 	// Clear active detector synchronously to prevent a stale goroutine
 	// from overwriting a future Start() call's setActiveDetector(d).
 	setActiveDetector(nil)
@@ -137,7 +113,7 @@ const healthCheckInterval = 30 * time.Second
 
 // onSubscribeEvent is called from the PulseAudio subscribe callback.
 // It runs on the PulseAudio event loop thread.
-func (d *Detector) onSubscribeEvent(facility, eventType int, _ uint32) {
+func (d *pulseDetector) onSubscribeEvent(facility, eventType int, _ uint32) {
 	d.mu.Lock()
 	if d.stopped {
 		d.mu.Unlock()
@@ -163,7 +139,7 @@ func (d *Detector) onSubscribeEvent(facility, eventType int, _ uint32) {
 
 // checkForMeeting queries PulseAudio for source-outputs and sink-inputs,
 // looking for a process that has both (indicating an active meeting).
-func (d *Detector) checkForMeeting() {
+func (d *pulseDetector) checkForMeeting() {
 	d.mu.Lock()
 	if d.active != nil || d.stopped {
 		d.mu.Unlock()
@@ -240,7 +216,7 @@ func (d *Detector) checkForMeeting() {
 }
 
 // checkForMeetingEnd verifies whether the tracked meeting is still active.
-func (d *Detector) checkForMeetingEnd() {
+func (d *pulseDetector) checkForMeetingEnd() {
 	d.mu.Lock()
 	if d.active == nil || d.stopped {
 		d.mu.Unlock()
@@ -277,7 +253,7 @@ func (d *Detector) checkForMeetingEnd() {
 }
 
 // healthCheckLoop periodically verifies the tracked meeting PID still exists.
-func (d *Detector) healthCheckLoop(ctx context.Context) {
+func (d *pulseDetector) healthCheckLoop(ctx context.Context) {
 	ticker := time.NewTicker(healthCheckInterval)
 	defer ticker.Stop()
 

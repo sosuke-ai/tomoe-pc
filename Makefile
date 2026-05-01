@@ -92,6 +92,19 @@ build-frontend: ## Build React frontend
 
 build-cuda: build ## Same binary — CUDA EP is selected at runtime via config
 
+build-darwin: ## Cross-compile darwin/arm64 abstraction packages (validates interfaces)
+	@echo "Cross-compiling platform abstraction packages for darwin/arm64..."
+	@echo "Note: full app build requires CGO + macOS toolchain (run on a Mac or in CI)."
+	GOOS=darwin GOARCH=arm64 CGO_ENABLED=0 go build \
+		./internal/config \
+		./internal/clipboard \
+		./internal/hotkey \
+		./internal/audio \
+		./internal/notify \
+		./internal/meeting \
+		./internal/sigfix
+	@echo "darwin abstraction packages compile cleanly."
+
 dev-gui: ## Run Wails dev mode with hot-reload
 	cd frontend && npm install
 	wails dev

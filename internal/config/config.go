@@ -103,54 +103,31 @@ func DefaultConfig() *Config {
 	}
 }
 
-// Path returns the default config file path (~/.config/tomoe/config.toml).
-// Respects $XDG_CONFIG_HOME if set.
+// Path returns the default config file path. Linux: ~/.config/tomoe/config.toml
+// (honors $XDG_CONFIG_HOME). macOS: ~/Library/Application Support/Tomoe/config.toml.
 func Path() string {
-	dir := os.Getenv("XDG_CONFIG_HOME")
-	if dir == "" {
-		home, err := os.UserHomeDir()
-		if err != nil {
-			home = os.Getenv("HOME")
-		}
-		dir = filepath.Join(home, ".config")
-	}
-	return filepath.Join(dir, "tomoe", "config.toml")
+	return filepath.Join(userConfigDir(), "config.toml")
 }
 
-// ModelDir returns the default model storage directory (~/.local/share/tomoe/models/).
-// Respects $XDG_DATA_HOME if set.
+// ModelDir returns the default model storage directory. Linux: ~/.local/share/tomoe/models/
+// (honors $XDG_DATA_HOME). macOS: ~/Library/Application Support/Tomoe/models/.
 func ModelDir() string {
-	dir := os.Getenv("XDG_DATA_HOME")
-	if dir == "" {
-		home, err := os.UserHomeDir()
-		if err != nil {
-			home = os.Getenv("HOME")
-		}
-		dir = filepath.Join(home, ".local", "share")
-	}
-	return filepath.Join(dir, "tomoe", "models")
+	return filepath.Join(DataDir(), "models")
 }
 
-// SessionDir returns the session storage directory (~/.local/share/tomoe/sessions/).
+// SessionDir returns the session storage directory.
 func SessionDir() string {
 	return filepath.Join(DataDir(), "sessions")
 }
 
-// DataDir returns the base data directory (~/.local/share/tomoe/).
+// DataDir returns the base data directory. Linux: ~/.local/share/tomoe/
+// (honors $XDG_DATA_HOME). macOS: ~/Library/Application Support/Tomoe/.
 func DataDir() string {
-	dir := os.Getenv("XDG_DATA_HOME")
-	if dir == "" {
-		home, err := os.UserHomeDir()
-		if err != nil {
-			home = os.Getenv("HOME")
-		}
-		dir = filepath.Join(home, ".local", "share")
-	}
-	return filepath.Join(dir, "tomoe")
+	return userDataDir()
 }
 
-// LibDir returns the directory for additional shared libraries (~/.local/share/tomoe/lib/).
-// Used for GPU provider .so files downloaded by `make install-gpu`.
+// LibDir returns the directory for additional shared libraries (e.g., GPU
+// provider .so/.dylib files downloaded by `make install-gpu`).
 func LibDir() string {
 	return filepath.Join(DataDir(), "lib")
 }

@@ -1,3 +1,5 @@
+//go:build linux
+
 package meeting
 
 import (
@@ -187,7 +189,7 @@ func TestEventTypeHelpers(t *testing.T) {
 
 func TestOnSubscribeEventDispatch(t *testing.T) {
 	// Verify that onSubscribeEvent doesn't panic and respects the stopped flag.
-	d := NewDetector()
+	d := &pulseDetector{events: make(chan MeetingEvent, 4)}
 
 	// Should not panic when called with any event type
 	d.onSubscribeEvent(int(paFacilitySourceOutput), int(paEventNew), 0)
@@ -219,7 +221,7 @@ func TestDetectorEventChannel(t *testing.T) {
 }
 
 func TestCheckForMeetingSkipsWhenActive(t *testing.T) {
-	d := NewDetector()
+	d := &pulseDetector{events: make(chan MeetingEvent, 4)}
 
 	// Set an active meeting — checkForMeeting should return early
 	d.mu.Lock()
@@ -231,7 +233,7 @@ func TestCheckForMeetingSkipsWhenActive(t *testing.T) {
 }
 
 func TestCheckForMeetingEndNoActive(t *testing.T) {
-	d := NewDetector()
+	d := &pulseDetector{events: make(chan MeetingEvent, 4)}
 
 	// No active meeting — checkForMeetingEnd should return early
 	d.checkForMeetingEnd()

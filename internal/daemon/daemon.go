@@ -37,7 +37,7 @@ type Daemon struct {
 	tracker       *speaker.Tracker
 	store         *session.Store
 	modelStatus   *models.Status
-	detector      *meeting.Detector
+	detector      meeting.Detector
 
 	tray *daemonTray
 }
@@ -49,7 +49,7 @@ type MeetingOpts struct {
 	Tracker       *speaker.Tracker
 	Store         *session.Store
 	ModelStatus   *models.Status
-	Detector      *meeting.Detector
+	Detector      meeting.Detector
 }
 
 // New creates a Daemon with the given dependencies.
