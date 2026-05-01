@@ -101,9 +101,28 @@ jobs:
           ls -la tomoe-mac-spike
           file tomoe-mac-spike
 
+      - name: Smoke-run spike on the runner (60s baseline)
+        run: |
+          ./tomoe-mac-spike --duration 60s | tee runner-spike-stdout.log || true
+          echo "--- log files ---"
+          ls -la tomoe-spike-*.log 2>/dev/null || echo "(no log file produced — likely macOS <14.2 on runner)"
+        timeout-minutes: 3
+        continue-on-error: true
+
       - name: Upload spike artifact
         uses: actions/upload-artifact@v4
         with:
           name: tomoe-mac-spike-arm64
           path: tomoe-mac-spike
           retention-days: 30
+
+      - name: Upload runner smoke-test logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: tomoe-mac-spike-runner-logs
+          path: |
+            tomoe-spike-*.log
+            runner-spike-stdout.log
+          retention-days: 30
+          if-no-files-found: warn
