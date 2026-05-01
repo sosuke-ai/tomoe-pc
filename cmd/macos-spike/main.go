@@ -21,6 +21,7 @@ import (
 	"os/signal"
 	"runtime"
 	"sort"
+	"strings"
 	"sync"
 	"syscall"
 	"time"
@@ -60,8 +61,16 @@ func main() {
 	procs, err := listProcesses()
 	if err != nil {
 		fmt.Fprintf(out, "[FATAL] %v\n\n", err)
-		fmt.Fprintf(out, "If you're on macOS <14.2 the per-process API isn't available.\n")
-		fmt.Fprintf(out, "Please run on macOS 14.4 or later.\n")
+		hw := hardwareModel()
+		isVirtual := strings.HasPrefix(hw, "Virtual") || strings.Contains(hw, "VMware") || strings.Contains(hw, "Parallels")
+		if isVirtual {
+			fmt.Fprintf(out, "Detected virtualized hardware (%s). Apple's Virtualization\n", hw)
+			fmt.Fprintf(out, "framework does not implement per-process audio introspection;\n")
+			fmt.Fprintf(out, "this API only works on physical Apple Silicon hardware.\n")
+		} else {
+			fmt.Fprintf(out, "If you're on macOS <14.2 the per-process API isn't available.\n")
+			fmt.Fprintf(out, "Please run on macOS 14.4 or later.\n")
+		}
 		os.Exit(2)
 	}
 	fmt.Fprintf(out, "[INIT] HAL process count: %d\n", len(procs))
