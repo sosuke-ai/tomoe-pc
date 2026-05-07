@@ -65,13 +65,18 @@ func FindDiarizeWorker() string {
 //
 // If attempts is nil or empty, DefaultDiarizeAttempts is used.
 func RunDiarizeWithRetry(sessID string, attempts []DiarizeAttempt) error {
-	if len(attempts) == 0 {
-		attempts = DefaultDiarizeAttempts
-	}
-
 	bin := FindDiarizeWorker()
 	if bin == "" {
 		return fmt.Errorf("tomoe binary not found (looked next to current executable and on $PATH)")
+	}
+	return runDiarizeWithBinary(bin, sessID, attempts)
+}
+
+// runDiarizeWithBinary is the testable core of RunDiarizeWithRetry: it takes
+// an explicit binary path so tests can substitute a fake worker.
+func runDiarizeWithBinary(bin, sessID string, attempts []DiarizeAttempt) error {
+	if len(attempts) == 0 {
+		attempts = DefaultDiarizeAttempts
 	}
 
 	var lastErr error
