@@ -100,7 +100,7 @@ func runDiarizeWithBinary(bin, sessID string, attempts []DiarizeAttempt) error {
 
 		var exitErr *exec.ExitError
 		if errors.As(err, &exitErr) {
-			if ws, ok := exitErr.ProcessState.Sys().(syscall.WaitStatus); ok && ws.Signaled() {
+			if ws, ok := exitErr.Sys().(syscall.WaitStatus); ok && ws.Signaled() {
 				fmt.Printf("diarize: %s killed by signal %v (likely sherpa-onnx crash); retrying\n",
 					a.Label, ws.Signal())
 				continue

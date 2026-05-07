@@ -154,9 +154,7 @@ func TestFindDiarizeWorker_PathLookup(t *testing.T) {
 		t.Fatalf("writing fake tomoe: %v", err)
 	}
 
-	origPath := os.Getenv("PATH")
-	defer os.Setenv("PATH", origPath)
-	os.Setenv("PATH", dir)
+	t.Setenv("PATH", dir)
 
 	got := FindDiarizeWorker()
 	// Allow either the test binary's sibling (unlikely) or our fake on PATH.
