@@ -39,8 +39,16 @@ type Daemon struct {
 	modelStatus   *models.Status
 	detector      meeting.Detector
 
+	// Background save pipeline. Each meeting stop enqueues; one worker
+	// drains the queue serially so concurrent diarization can't corrupt
+	// sherpa-onnx state. Buffer keeps stop→start non-blocking under burst.
+	saveQueue chan *meetingState
+	saveWG    sync.WaitGroup
+
 	tray *daemonTray
 }
+
+const saveQueueDepth = 16
 
 // MeetingOpts holds optional dependencies for meeting recording mode.
 type MeetingOpts struct {
@@ -77,6 +85,16 @@ func (d *Daemon) Run(ctx context.Context) error {
 		return fmt.Errorf("writing PID file: %w", err)
 	}
 	defer RemovePID()
+
+	// Start the background save worker. Drains pending saves on shutdown
+	// so we never lose a session that was queued before the daemon exited.
+	d.saveQueue = make(chan *meetingState, saveQueueDepth)
+	d.saveWG.Add(1)
+	go d.saveWorker()
+	defer func() {
+		close(d.saveQueue)
+		d.saveWG.Wait()
+	}()
 
 	// Start system tray — use config for language list (not engine availability)
 	defaultLang := "en"
@@ -464,12 +482,25 @@ func (d *Daemon) stopMeeting(ms *meetingState) {
 	_ = d.svc.Notifier.Send("Tomoe", msg)
 	fmt.Println(msg)
 
-	// Save audio + diarization + session in background so the main loop
-	// can immediately handle new events (hotkeys, auto-detect, tray).
-	go d.saveMeetingAsync(ms)
+	// Hand off to the serial save worker. The worker runs audio encode +
+	// diarization + persistence one meeting at a time, so concurrent stops
+	// can't race on sherpa-onnx state. The buffered channel keeps the
+	// foreground non-blocking under typical bursts.
+	d.saveQueue <- ms
 }
 
-// saveMeetingAsync encodes audio, runs post-processing, and saves the session.
+// saveWorker drains queued meetings and persists each one serially.
+// Must be the only goroutine calling saveMeetingAsync.
+func (d *Daemon) saveWorker() {
+	defer d.saveWG.Done()
+	for ms := range d.saveQueue {
+		d.saveMeetingAsync(ms)
+	}
+}
+
+// saveMeetingAsync encodes audio, persists the session, then runs
+// diarization as a refinement pass. Saving before diarization ensures
+// the session is recoverable even if diarization or the daemon crashes.
 func (d *Daemon) saveMeetingAsync(ms *meetingState) {
 	if d.store == nil {
 		return
@@ -498,24 +529,22 @@ func (d *Daemon) saveMeetingAsync(ms *meetingState) {
 		}
 	}
 
-	// Post-processing: run neural diarization to refine speaker labels
-	if d.modelStatus != nil && d.modelStatus.DiarizationReady() {
-		count, err := session.ReidentifyByDiarization(ms.session, session.DiarizeConfig{
-			SegmentationModelPath: d.modelStatus.SpeakerSegmentationPath,
-			EmbeddingModelPath:    d.modelStatus.SpeakerEmbeddingPath,
-			Threshold:             1.1,
-			MergeThreshold:        0.55,
-			UseGPU:                d.cfg.Transcription.GPUEnabled,
-		})
-		if err != nil {
-			fmt.Printf("Warning: post-recording diarization failed: %v\n", err)
-		} else if count > 0 {
-			fmt.Printf("Post-processing: refined speaker labels for %d segments\n", count)
-		}
-	}
-
+	// Persist the session before diarization. Speaker labels are still the
+	// live tracker output; diarization below will refine and re-save them.
 	if err := d.store.Save(ms.session); err != nil {
 		fmt.Printf("Error saving session: %v\n", err)
+	}
+
+	// Refinement: neural diarization in an isolated subprocess so a
+	// sherpa-onnx Process() crash never reaches the daemon. The subprocess
+	// retries GPU → GPU → CPU; on success it overwrites the session.json
+	// on disk with refined speaker labels.
+	if d.modelStatus != nil && d.modelStatus.DiarizationReady() {
+		if err := session.RunDiarizeWithRetry(ms.session.ID, nil); err != nil {
+			fmt.Printf("Warning: diarization failed (session saved without refinement): %v\n", err)
+		} else if reloaded, err := d.store.Load(ms.session.ID); err == nil {
+			ms.session = reloaded
+		}
 	}
 
 	msg := fmt.Sprintf("Meeting saved — %s", ms.session.Title)

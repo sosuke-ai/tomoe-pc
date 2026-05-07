@@ -50,19 +50,39 @@ type App struct {
 	// Carries language code; "" = stop.
 	trayMeetCh chan string
 	tray       *trayManager
+
+	// Background save pipeline. Each StopSession enqueues; one worker
+	// drains serially so concurrent diarization can't corrupt sherpa-onnx
+	// state. Buffer keeps the foreground non-blocking under burst.
+	saveQueue chan *saveRequest
+	saveWG    sync.WaitGroup
 }
+
+// saveRequest is a unit of work for the background save worker.
+type saveRequest struct {
+	sess        *session.Session
+	coordinator *live.Coordinator
+}
+
+const saveQueueDepth = 16
 
 // NewApp creates a new App instance.
 func NewApp() *App {
 	return &App{
 		trayDictCh: make(chan string, 1),
 		trayMeetCh: make(chan string, 1),
+		saveQueue:  make(chan *saveRequest, saveQueueDepth),
 	}
 }
 
 // Startup is called by Wails when the application starts.
 func (a *App) Startup(ctx context.Context) {
 	a.ctx = ctx
+
+	// Start the background save worker. Drains pending saves on Shutdown
+	// so we never lose a session that was queued before app exit.
+	a.saveWG.Add(1)
+	go a.saveWorker()
 
 	// Load or create config
 	var cfg *config.Config
@@ -156,6 +176,15 @@ func (a *App) Shutdown(ctx context.Context) {
 	if a.detector != nil {
 		a.detector.Stop()
 	}
+
+	// Drain pending saves before closing engines/embedder, since a save in
+	// flight may still be using sherpa-onnx state.
+	if a.saveQueue != nil {
+		close(a.saveQueue)
+		a.saveWG.Wait()
+		a.saveQueue = nil
+	}
+
 	if a.engines != nil {
 		a.engines.Close()
 	}
@@ -325,59 +354,69 @@ func (a *App) StopSession() (*session.Session, error) {
 	// Notify UI immediately — recording is done
 	wailsRuntime.EventsEmit(a.ctx, "session:stopped", sess.ID)
 
-	// Save audio + session in background so UI doesn't block
-	go func() {
-		var tracks [][]float32
-		if coordinator.IsDualSource() {
-			mic := coordinator.MicSamples()
-			mon := coordinator.MonitorSamples()
-			if len(mic) > 0 && len(mon) > 0 {
-				tracks = [][]float32{mic, mon}
-			}
-		} else {
-			samples := coordinator.AudioSamples()
-			if len(samples) > 0 {
-				tracks = [][]float32{samples}
-			}
-		}
-		if len(tracks) > 0 {
-			audioPath := filepath.Join(config.SessionDir(), sess.ID, "audio.m4a")
-			if err := session.SaveAudioM4A(tracks, 16000, audioPath); err == nil {
-				sess.AudioPath = audioPath
-			} else {
-				fmt.Printf("Error saving audio: %v\n", err)
-			}
-		}
-
-		// Post-processing: run neural diarization to refine speaker labels
-		if a.modelMgr != nil {
-			status := a.modelMgr.Check()
-			if status.DiarizationReady() {
-				gpuInfo := gpu.Detect()
-				useGPU := gpuInfo.Available && gpuInfo.Sufficient
-				count, err := session.ReidentifyByDiarization(sess, session.DiarizeConfig{
-					SegmentationModelPath: status.SpeakerSegmentationPath,
-					EmbeddingModelPath:    status.SpeakerEmbeddingPath,
-					Threshold:             1.1,
-					MergeThreshold:        0.55,
-					UseGPU:                useGPU,
-				})
-				if err != nil {
-					fmt.Printf("Warning: post-recording diarization failed: %v\n", err)
-				} else if count > 0 {
-					fmt.Printf("Post-processing: refined speaker labels for %d segments\n", count)
-				}
-			}
-		}
-
-		if err := a.store.Save(sess); err != nil {
-			fmt.Printf("Error saving session: %v\n", err)
-		}
-
-		wailsRuntime.EventsEmit(a.ctx, "session:saved", sess.ID)
-	}()
+	// Hand off to the serial save worker so the next StartSession can
+	// proceed immediately while encoding + diarization run in the background.
+	a.saveQueue <- &saveRequest{sess: sess, coordinator: coordinator}
 
 	return sess, nil
+}
+
+// saveWorker drains the save queue and persists each session serially.
+// Must be the only goroutine calling persistSession.
+func (a *App) saveWorker() {
+	defer a.saveWG.Done()
+	for req := range a.saveQueue {
+		a.persistSession(req)
+	}
+}
+
+// persistSession encodes audio, persists the session, then runs
+// diarization as a refinement pass. Saving before diarization ensures
+// the session is recoverable even if diarization or the app crashes.
+func (a *App) persistSession(req *saveRequest) {
+	sess := req.sess
+	coordinator := req.coordinator
+
+	var tracks [][]float32
+	if coordinator.IsDualSource() {
+		mic := coordinator.MicSamples()
+		mon := coordinator.MonitorSamples()
+		if len(mic) > 0 && len(mon) > 0 {
+			tracks = [][]float32{mic, mon}
+		}
+	} else {
+		samples := coordinator.AudioSamples()
+		if len(samples) > 0 {
+			tracks = [][]float32{samples}
+		}
+	}
+	if len(tracks) > 0 {
+		audioPath := filepath.Join(config.SessionDir(), sess.ID, "audio.m4a")
+		if err := session.SaveAudioM4A(tracks, 16000, audioPath); err == nil {
+			sess.AudioPath = audioPath
+		} else {
+			fmt.Printf("Error saving audio: %v\n", err)
+		}
+	}
+
+	// Persist before diarization so the session survives a diarize crash.
+	if err := a.store.Save(sess); err != nil {
+		fmt.Printf("Error saving session: %v\n", err)
+	}
+
+	// Refinement: neural diarization in an isolated subprocess (sibling
+	// `tomoe` binary) so sherpa-onnx Process() crashes never reach the
+	// GUI. Retries GPU → GPU → CPU; on success the subprocess overwrites
+	// session.json with refined labels. We don't reload here because
+	// the frontend will re-fetch via LoadSession on the session:saved
+	// event below.
+	if a.modelMgr != nil && a.modelMgr.Check().DiarizationReady() {
+		if err := session.RunDiarizeWithRetry(sess.ID, nil); err != nil {
+			fmt.Printf("Warning: diarization failed (session saved without refinement): %v\n", err)
+		}
+	}
+
+	wailsRuntime.EventsEmit(a.ctx, "session:saved", sess.ID)
 }
 
 // GetSessionList returns all stored sessions.
