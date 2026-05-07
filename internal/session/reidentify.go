@@ -10,6 +10,7 @@ import (
 
 	sherpa "github.com/k2-fsa/sherpa-onnx-go/sherpa_onnx"
 
+	"github.com/sosuke-ai/tomoe-pc/internal/sigfix"
 	"github.com/sosuke-ai/tomoe-pc/internal/speaker"
 )
 
@@ -68,6 +69,10 @@ func Diarize(samples []float32, cfg DiarizeConfig) ([]DiarizeSegment, map[int]st
 	if sd == nil {
 		return nil, nil, fmt.Errorf("failed to create diarization engine (check model paths)")
 	}
+	// ONNX Runtime re-installs SIGSEGV without SA_ONSTACK on each create;
+	// re-patch so a stray segfault in cgo lands on the alt-stack instead
+	// of trampling Go's signal-handling.
+	sigfix.AfterSherpa()
 	defer sherpa.DeleteOfflineSpeakerDiarization(sd)
 
 	if sd.SampleRate() != pcmSampleRate {
