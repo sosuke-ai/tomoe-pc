@@ -15,10 +15,12 @@ require (
 )
 
 require (
+	github.com/arran4/golang-ical v0.3.6 // indirect
 	github.com/bep/debounce v1.2.1 // indirect
 	github.com/go-ole/go-ole v1.3.0 // indirect
 	github.com/godbus/dbus/v5 v5.1.0 // indirect
 	github.com/gorilla/websocket v1.5.3 // indirect
+	github.com/imyousuf/CodeEagle/pkg/jev v0.1.0 // indirect
 	github.com/inconshreveable/mousetrap v1.1.0 // indirect
 	github.com/jchv/go-winloader v0.0.0-20210711035445-715c2860da7e // indirect
 	github.com/k2-fsa/sherpa-onnx-go-linux v1.12.28 // indirect

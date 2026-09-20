@@ -17,6 +17,12 @@ type Config struct {
 	Output        OutputConfig        `toml:"output"`
 	Meeting       MeetingConfig       `toml:"meeting"`
 	Multilingual  MultilingualConfig  `toml:"multilingual"`
+	Calendar      CalendarConfig      `toml:"calendar"`
+
+	// resolved records ${VAR} / $(cmd) expansions applied during Load, so
+	// Save can write the original expressions back rather than the resolved
+	// secrets. Populated by expandConfig. Not part of the TOML schema.
+	resolved map[string]resolvedValue
 }
 
 // HotkeyConfig holds global hotkey settings.
@@ -65,6 +71,62 @@ type MeetingConfig struct {
 	AutoDetect         bool    `toml:"auto_detect"`          // auto-detect meetings via PulseAudio
 }
 
+// CalendarConfig holds calendar-integration settings. Off by default.
+// See docs/calendar-integration-tech-brief.md for the design.
+type CalendarConfig struct {
+	Enabled                 bool                      `toml:"enabled"`
+	Providers               []string                  `toml:"providers"`                  // ["ical"] in v1; auto-populated when empty and ICS entries exist
+	MatchStartWindowMinutes int                       `toml:"match_start_window_minutes"` // tolerance for session-start ↔ event-start
+	MatchEndWindowBound     bool                      `toml:"match_end_window_bound"`     // false = unbounded (meetings run long)
+	MatchScoreThreshold     int                       `toml:"match_score_threshold"`      // events below this are "no match"
+	CacheTTLSeconds         int                       `toml:"cache_ttl_seconds"`          // in-memory provider-result cache TTL
+	Jev                     JevConfig                 `toml:"jev"`
+	ICal                    []ICalConfig              `toml:"ical"`
+	ParticipantResolver     ParticipantResolverConfig `toml:"participant_resolver"`
+}
+
+// JevConfig holds settings for optional Jev-based topic adjudication.
+// Off by default. See internal/calendar/jev.go (Phase 2).
+type JevConfig struct {
+	Enabled                  bool   `toml:"enabled"`
+	APIKey                   string `toml:"api_key"` // recommend $(pass show ...) via config expansion
+	Model                    string `toml:"model"`
+	TopicWeight              int    `toml:"topic_weight"`               // points contributed to the match score (0-100)
+	TranscriptContextSeconds int    `toml:"transcript_context_seconds"` // how much of the transcript's start Jev sees
+}
+
+// ICalConfig describes one ICS URL subscription. Multiple entries are
+// fetched in parallel and their events pooled through the same matcher.
+type ICalConfig struct {
+	Name string `toml:"name"` // display name, e.g. "Personal", "Work"
+	URL  string `toml:"url"`  // webcal:// or https:// ICS feed
+}
+
+// ParticipantResolverConfig configures an out-of-process resolver Tomoe
+// calls after every calendar match to enrich or replace the event's
+// participant list. See internal/calendar/sock for the client and the
+// documented request/response protocol; anyone can implement a compatible
+// server in any language.
+//
+// Exactly one of SocketPath or URL must be set when Enabled is true.
+type ParticipantResolverConfig struct {
+	Enabled bool `toml:"enabled"`
+	// SocketPath is the absolute path to a Unix domain socket the resolver
+	// listens on. The client POSTs to this socket with an HTTP request.
+	SocketPath string `toml:"socket_path"`
+	// URL is a TCP HTTP endpoint (http:// or https://). Mutually exclusive
+	// with SocketPath.
+	URL string `toml:"url"`
+	// Path is the HTTP request path the client POSTs to. Defaults to
+	// "/resolve". Applies to both SocketPath and URL transports.
+	Path string `toml:"path"`
+	// AuthHeader is sent verbatim in the Authorization header, e.g.
+	// "Bearer $(pass show tomoe-resolver-token)". Supports config expansion.
+	AuthHeader string `toml:"auth_header"`
+	// TimeoutSeconds bounds one resolver call. Default 10.
+	TimeoutSeconds int `toml:"timeout_seconds"`
+}
+
 // DefaultConfig returns a Config with sensible defaults.
 func DefaultConfig() *Config {
 	return &Config{
@@ -99,6 +161,23 @@ func DefaultConfig() *Config {
 			MinSilenceDuration: 0.5,
 			AutoSave:           true,
 			AutoDetect:         true,
+		},
+		Calendar: CalendarConfig{
+			Enabled:                 false,
+			MatchStartWindowMinutes: 15,
+			MatchEndWindowBound:     false,
+			MatchScoreThreshold:     40,
+			CacheTTLSeconds:         300,
+			Jev: JevConfig{
+				Enabled:                  false,
+				TopicWeight:              40,
+				TranscriptContextSeconds: 120,
+			},
+			ParticipantResolver: ParticipantResolverConfig{
+				Enabled:        false,
+				Path:           "/resolve",
+				TimeoutSeconds: 10,
+			},
 		},
 	}
 }
@@ -163,6 +242,8 @@ func Exists() bool {
 
 // Load reads and parses the config file at the given path.
 // Starts from DefaultConfig so fields absent from the file retain their defaults.
+// After unmarshaling, ${VAR} and $(cmd) references in string values are expanded
+// (see expand.go).
 func Load(path string) (*Config, error) {
 	data, err := os.ReadFile(path)
 	if err != nil {
@@ -174,15 +255,32 @@ func Load(path string) (*Config, error) {
 		return nil, fmt.Errorf("parsing config: %w", err)
 	}
 
+	if err := expandConfig(cfg); err != nil {
+		return nil, fmt.Errorf("expanding config: %w", err)
+	}
+
+	// ICS auto-enable: when calendar is on but the providers list is empty
+	// and the user has configured at least one ICS URL, treat it as
+	// ["ical"]. Saves the user from filling in a second knob.
+	if cfg.Calendar.Enabled && len(cfg.Calendar.Providers) == 0 && len(cfg.Calendar.ICal) > 0 {
+		cfg.Calendar.Providers = []string{"ical"}
+	}
+
 	return cfg, nil
 }
 
 // Save writes the config to the given path, creating parent directories as needed.
+// Any string values that were expanded from ${VAR} / $(cmd) references at Load
+// time are restored to their original expressions before marshaling, so
+// secrets are never round-tripped to disk in plain text.
 func Save(cfg *Config, path string) error {
 	dir := filepath.Dir(path)
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return fmt.Errorf("creating config directory: %w", err)
 	}
+
+	restore := cfg.unexpandForWrite()
+	defer restore()
 
 	header := fmt.Sprintf("# Generated by tomoe auto-init on %s\n\n",
 		time.Now().Format(time.RFC3339))
