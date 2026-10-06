@@ -18,26 +18,21 @@ type trayManager struct {
 	mQuit          *systray.MenuItem
 }
 
-// StartTray initializes and runs the system tray.
-// Must be called from the main goroutine on some platforms.
-func StartTray(app *App) {
-	systray.Run(func() {
-		onTrayReady(app)
-	}, func() {
-		// Cleanup on exit
-	})
-}
-
-// StartTrayAsync starts the system tray in a goroutine.
-func StartTrayAsync(app *App) {
-	go StartTray(app)
-}
-
+// StartTrayAsync starts the system tray. See tray_start_linux.go /
+// tray_start_darwin.go — the two platforms need genuinely different
+// wiring, not just a different backend, because darwin's Wails window
+// already owns the real Cocoa main thread/run loop (see
+// tray_start_darwin.go's doc comment for the full explanation).
 func onTrayReady(app *App) {
 	systray.SetTitle("Tomoe")
 	systray.SetTooltip("Tomoe — Ready")
 	systray.SetIcon(trayIcon)
+	buildTrayMenu(app)
+}
 
+// buildTrayMenu creates the tray's menu items from the app's current
+// language settings. Runs on the tray's thread (see onTrayThread).
+func buildTrayMenu(app *App) {
 	tm := &trayManager{app: app}
 	app.tray = tm
 
@@ -54,7 +49,12 @@ func onTrayReady(app *App) {
 	tm.mQuit = systray.AddMenuItem("Quit", "Quit Tomoe")
 
 	go func() {
-		<-tm.mQuit.ClickedCh
+		// systray closes ClickedCh when the item is removed (ResetMenu,
+		// see rebuildTrayMenu): that's not a click, just the end of this
+		// menu.
+		if _, ok := <-tm.mQuit.ClickedCh; !ok {
+			return
+		}
 		if tm.app.recording {
 			_, _ = tm.app.StopSession()
 		}
@@ -73,7 +73,10 @@ func (tm *trayManager) initSingleLang(lang string) {
 	go func() {
 		for {
 			select {
-			case <-tm.mDictation.ClickedCh:
+			case _, ok := <-tm.mDictation.ClickedCh:
+				if !ok {
+					return // item removed by ResetMenu, not clicked
+				}
 				if tm.app.ctx == nil {
 					continue
 				}
@@ -81,7 +84,10 @@ func (tm *trayManager) initSingleLang(lang string) {
 				case tm.app.trayDictCh <- lang:
 				default:
 				}
-			case <-tm.mMeeting.ClickedCh:
+			case _, ok := <-tm.mMeeting.ClickedCh:
+				if !ok {
+					return // item removed by ResetMenu, not clicked
+				}
 				if tm.app.ctx == nil {
 					continue
 				}
@@ -209,4 +215,19 @@ func (tm *trayManager) setMeetingRecording() {
 	if tm.mDictation != nil {
 		tm.mDictation.Hide()
 	}
+}
+
+// rebuildTrayMenu replaces the tray menu, for when settings change the
+// languages it offers. ResetMenu closes every old item's ClickedCh, which
+// ends their click goroutines; each one must check for that rather than
+// treat a closed channel as a click (which once toggled a meeting on and
+// off in a tight loop).
+func (a *App) rebuildTrayMenu() {
+	if a.tray == nil {
+		return // tray never started
+	}
+	onTrayThread(func() {
+		systray.ResetMenu()
+		buildTrayMenu(a)
+	})
 }

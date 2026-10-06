@@ -6,25 +6,67 @@ import SessionList from './components/SessionList'
 import SettingsPanel from './components/SettingsPanel'
 import StatusBar from './components/StatusBar'
 import ExportDialog from './components/ExportDialog'
+import VideoHintActivity from './components/VideoHintActivity'
+import VideoHintReview from './components/VideoHintReview'
+import DiagnosticsPane from './components/DiagnosticsPane'
+import InitScreen from './components/InitScreen'
+import ToolsPanel from './components/ToolsPanel'
+import { EventsOn } from '../wailsjs/runtime/runtime'
 import { useTranscript } from './hooks/useTranscript'
 import { useSession } from './hooks/useSession'
-import { DeviceInfo, Session } from './types'
+import { DeviceInfo, Session, AudioSourceView } from './types'
 
-type View = 'live' | 'sessions' | 'settings';
+type View = 'live' | 'sessions' | 'settings' | 'tools' | 'videohints' | 'diagnostics';
 
 function App() {
+  // True from launch until the backend's first-run setup finishes (see
+  // backend.App.runInit) -- generating config.toml and downloading any
+  // model that isn't already present. Gates the whole app behind
+  // InitScreen so nothing here can call a bound method (ListAudioDevices,
+  // StartSession, ...) before the engines they depend on actually exist.
+  const [initializing, setInitializing] = useState(true);
   const [view, setView] = useState<View>('live');
   const [micDevice, setMicDevice] = useState('default');
   const [monitorDevice, setMonitorDevice] = useState('');
   const [devices, setDevices] = useState<DeviceInfo[]>([]);
   const [monitors, setMonitors] = useState<DeviceInfo[]>([]);
+  const [audioSources, setAudioSources] = useState<AudioSourceView[]>([]);
   const [languages, setLanguages] = useState<string[]>(['en']);
   const [selectedLang, setSelectedLang] = useState('en');
+  const [systemAudioMode, setSystemAudioMode] = useState<'manual' | 'auto'>('manual');
   const [exportSessionId, setExportSessionId] = useState<string | null>(null);
   const { segments, clear: clearTranscript } = useTranscript();
   const { isRecording, startTime, reset: resetSession } = useSession();
 
+  // Fires once the backend's runInit completes (see InitScreen);
+  // init:failed is handled by InitScreen itself, which stays up showing
+  // the error rather than letting the app past it in a broken state.
+  //
+  // init:done fires once and never replays, so subscribing alone isn't
+  // enough: on the common launch (everything already downloaded),
+  // runInit can finish in milliseconds, before this component has even
+  // mounted -- missing the event entirely and getting stuck here
+  // forever. Subscribing first, then asking InitStatus() for whatever
+  // already happened, covers both orders: an event this effect is still
+  // around to catch, or one it missed because runInit had already
+  // finished.
   useEffect(() => {
+    const cancel = EventsOn('init:done', () => setInitializing(false));
+    window.go?.backend?.App?.InitStatus()
+      .then(s => { if (s.done) setInitializing(false); })
+      .catch(() => {});
+    return () => cancel();
+  }, []);
+
+  // Settings can change the languages on offer (see SettingsPanel).
+  useEffect(() => {
+    if (initializing) return;
+    return EventsOn('settings:applied', () => loadLanguages());
+  }, [initializing]);
+
+  useEffect(() => {
+    if (initializing) return; // nothing bound below is ready to call yet
+
     loadDevices();
     loadLanguages();
 
@@ -43,7 +85,17 @@ function App() {
     }
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [isRecording, micDevice, monitorDevice]);
+  }, [initializing, isRecording, micDevice, monitorDevice]);
+
+  // Keep the macOS audio-source picker current while it's actually
+  // being looked at: refreshing during an active recording would just
+  // change options out from under a disabled, already-committed
+  // picker for no benefit.
+  useEffect(() => {
+    if (systemAudioMode !== 'auto' || isRecording) return;
+    const interval = setInterval(loadAudioSources, 3000);
+    return () => clearInterval(interval);
+  }, [systemAudioMode, isRecording]);
 
   async function loadDevices() {
     try {
@@ -57,9 +109,38 @@ function App() {
           const def = mons.find((m: DeviceInfo) => m.IsDefault);
           setMonitorDevice(def ? def.Name : mons[0].Name);
         }
+        try {
+          const mode = await window.go.backend.App.SystemAudioMode();
+          if (mode === 'auto' || mode === 'manual') {
+            setSystemAudioMode(mode);
+            if (mode === 'auto') await loadAudioSources();
+          }
+        } catch {
+          // Method may not exist in older builds — default to 'manual'
+        }
       }
     } catch (e) {
       console.error('Failed to load devices:', e);
+    }
+  }
+
+  // macOS's audio-source list changes as apps start/stop playing audio
+  // (unlike Linux's fairly static PulseAudio device list), so this is
+  // called on load and polled periodically while it's actually visible
+  // and selectable — see the effect below.
+  async function loadAudioSources() {
+    try {
+      if (!window.go?.backend?.App?.ListAudioSources) return;
+      const sources = await window.go.backend.App.ListAudioSources();
+      setAudioSources(sources || []);
+      // Default to "Everything" (matches the old auto-detect's
+      // always-on-if-available behavior) rather than leaving the
+      // picker unset until the user notices it. Only when nothing is
+      // selected yet: an explicit "No System Audio" is "none", so this
+      // periodic refresh never overrides it.
+      setMonitorDevice(prev => prev || 'everything');
+    } catch (e) {
+      console.error('Failed to load audio sources:', e);
     }
   }
 
@@ -72,8 +153,10 @@ function App() {
         const langs = await window.go.backend.App.GetAvailableLanguages();
         if (langs && langs.length > 0) {
           setLanguages(langs);
+          // Keep the user's pick (e.g. BN) across reloads; only fall back
+          // to the default when it's no longer offered.
           const defLang = await window.go.backend.App.GetDefaultLanguage();
-          if (defLang) setSelectedLang(defLang);
+          setSelectedLang(cur => (langs.includes(cur) ? cur : defLang || langs[0]));
           return;
         }
       } catch {
@@ -113,6 +196,10 @@ function App() {
     }
   }
 
+  if (initializing) {
+    return <InitScreen />;
+  }
+
   return (
     <div className="app">
       <div className="toolbar">
@@ -124,6 +211,8 @@ function App() {
           onMicChange={setMicDevice}
           onMonitorChange={setMonitorDevice}
           disabled={isRecording}
+          systemAudioMode={systemAudioMode}
+          audioSources={audioSources}
         />
         {languages.length > 1 && (
           <select
@@ -151,6 +240,29 @@ function App() {
         >
           &#x1F4CB;
         </button>
+        {systemAudioMode === 'auto' && (
+          <button
+            className="btn-icon"
+            title="Pending Screenshots (macOS meeting-label review)"
+            onClick={() => setView(view === 'videohints' ? 'live' : 'videohints')}
+          >
+            &#x1F4F7;
+          </button>
+        )}
+        <button
+          className="btn-icon"
+          title="Diagnostics (live speaker-labeling internals)"
+          onClick={() => setView(view === 'diagnostics' ? 'live' : 'diagnostics')}
+        >
+          &#x1F50D;
+        </button>
+        <button
+          className="btn-icon"
+          title="Tools (dependencies, models, permissions)"
+          onClick={() => setView(view === 'tools' ? 'live' : 'tools')}
+        >
+          &#x1F9F0;
+        </button>
         <button
           className="btn-icon"
           title="Settings"
@@ -161,7 +273,10 @@ function App() {
       </div>
 
       {view === 'live' && (
-        <TranscriptPane segments={segments} isRecording={isRecording} />
+        <>
+          {systemAudioMode === 'auto' && <VideoHintActivity />}
+          <TranscriptPane segments={segments} isRecording={isRecording} />
+        </>
       )}
 
       {view === 'sessions' && (
@@ -170,6 +285,18 @@ function App() {
 
       {view === 'settings' && (
         <SettingsPanel />
+      )}
+
+      {view === 'tools' && (
+        <ToolsPanel />
+      )}
+
+      {view === 'videohints' && (
+        <VideoHintReview />
+      )}
+
+      {view === 'diagnostics' && (
+        <DiagnosticsPane />
       )}
 
       <StatusBar

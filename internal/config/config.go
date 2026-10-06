@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sync"
 	"time"
 
 	"github.com/pelletier/go-toml/v2"
@@ -38,6 +39,11 @@ type TranscriptionConfig struct {
 	HotwordsScore  float32 `toml:"hotwords_score"`
 	DecodingMethod string  `toml:"decoding_method"` // "greedy_search" or "modified_beam_search"
 	MaxActivePaths int     `toml:"max_active_paths"`
+	// TwoPass enables two-pass live transcription for English meetings
+	// when the English streaming model is downloaded: streaming text as
+	// it's spoken, refined by Parakeet once each utterance ends. false
+	// keeps single-pass (Parakeet only, text appears per utterance).
+	TwoPass bool `toml:"two_pass"`
 }
 
 // OutputConfig holds output behavior settings.
@@ -55,14 +61,55 @@ type MultilingualConfig struct {
 }
 
 // MeetingConfig holds Phase 2 meeting transcription settings.
+//
+// The speaker-clustering and video-hint-timing fields below (from
+// SpeakerThreshold down) are hot-reloaded: internal/backend and
+// internal/daemon both watch config.toml's mtime and re-apply these
+// live via speaker.Tracker.SetTuning, so they can be retuned without a
+// rebuild or even a relaunch — added after a real live-tuning session
+// (see speaker.DefaultThreshold's doc comment) needed several
+// rebuild+relaunch cycles just to test one constant change at a time.
 type MeetingConfig struct {
 	DefaultSources     string  `toml:"default_sources"`      // "mic", "monitor", "both"
-	MonitorDevice      string  `toml:"monitor_device"`       // monitor source device name
-	SpeakerThreshold   float64 `toml:"speaker_threshold"`    // cosine similarity threshold
+	MonitorDevice      string  `toml:"monitor_device"`       // monitor source device name; "" = default monitor (Linux), "none" = mic only
+	SpeakerThreshold   float64 `toml:"speaker_threshold"`    // cosine similarity threshold for a confident speaker match
 	MaxSpeechDuration  float64 `toml:"max_speech_duration"`  // seconds
 	MinSilenceDuration float64 `toml:"min_silence_duration"` // seconds
 	AutoSave           bool    `toml:"auto_save"`            // save session on stop
 	AutoDetect         bool    `toml:"auto_detect"`          // auto-detect meetings via PulseAudio
+
+	// StickyGraceWindow/StickyThresholdMargin/MinAssignDuration/
+	// ShortSegmentGraceWindow mirror speaker.Tuning's fields exactly
+	// (seconds here instead of time.Duration, since TOML has no
+	// duration type) — see speaker.Tuning's doc comment for what each
+	// one does.
+	StickyGraceWindow       float64 `toml:"sticky_grace_window"`
+	StickyThresholdMargin   float64 `toml:"sticky_threshold_margin"`
+	MinAssignDuration       float64 `toml:"min_assign_duration"`
+	ShortSegmentGraceWindow float64 `toml:"short_segment_grace_window"`
+
+	// VideoHintPollInterval/VideoHintTriggerDebounce mirror
+	// videohint.Poll's interval/trigger-debounce parameters (seconds).
+	VideoHintPollInterval    float64 `toml:"video_hint_poll_interval"`
+	VideoHintTriggerDebounce float64 `toml:"video_hint_trigger_debounce"`
+}
+
+// VideoHintTiming converts VideoHintPollInterval/VideoHintTriggerDebounce
+// into time.Duration, falling back to DefaultConfig's values for
+// anything zero/invalid — the one place this seconds-to-Duration
+// conversion happens, shared by internal/backend and internal/daemon
+// rather than duplicated at each videohint.Poll call site.
+func (m MeetingConfig) VideoHintTiming() (pollInterval, triggerDebounce time.Duration) {
+	def := DefaultConfig().Meeting
+	interval := m.VideoHintPollInterval
+	if interval <= 0 {
+		interval = def.VideoHintPollInterval
+	}
+	debounce := m.VideoHintTriggerDebounce
+	if debounce <= 0 {
+		debounce = def.VideoHintTriggerDebounce
+	}
+	return time.Duration(interval * float64(time.Second)), time.Duration(debounce * float64(time.Second))
 }
 
 // DefaultConfig returns a Config with sensible defaults.
@@ -81,6 +128,9 @@ func DefaultConfig() *Config {
 			DecodingMethod: "greedy_search",
 			HotwordsScore:  1.5,
 			MaxActivePaths: 4,
+			// Off, as on main: two-pass is opt-in until it has been
+			// tuned on real recordings (see `tomoe session replay`).
+			TwoPass: false,
 		},
 		Output: OutputConfig{
 			AutoPaste:      true,
@@ -99,35 +149,92 @@ func DefaultConfig() *Config {
 			MinSilenceDuration: 0.5,
 			AutoSave:           true,
 			AutoDetect:         true,
+
+			// The sticky-speaker and short-segment rules are off (margin
+			// and duration 0), matching main's clustering, until they're
+			// proven on real recordings. The windows only matter once a
+			// rule is turned on; speaker.ExperimentalTuning has the values
+			// tuned from live meetings.
+			StickyGraceWindow:       3.0,
+			StickyThresholdMargin:   0,
+			MinAssignDuration:       0,
+			ShortSegmentGraceWindow: 15.0,
+
+			VideoHintPollInterval:    5.0,
+			VideoHintTriggerDebounce: 1.0,
 		},
 	}
 }
 
-// Path returns the default config file path. Linux: ~/.config/tomoe/config.toml
-// (honors $XDG_CONFIG_HOME). macOS: ~/Library/Application Support/Tomoe/config.toml.
+// Path returns the default config file path (~/.config/tomoe/config.toml).
+// Respects $XDG_CONFIG_HOME if set.
 func Path() string {
-	return filepath.Join(userConfigDir(), "config.toml")
+	dir := os.Getenv("XDG_CONFIG_HOME")
+	if dir == "" {
+		home, err := os.UserHomeDir()
+		if err != nil {
+			home = os.Getenv("HOME")
+		}
+		dir = filepath.Join(home, ".config")
+	}
+	return filepath.Join(dir, "tomoe", "config.toml")
 }
 
-// ModelDir returns the default model storage directory. Linux: ~/.local/share/tomoe/models/
-// (honors $XDG_DATA_HOME). macOS: ~/Library/Application Support/Tomoe/models/.
+// ModelDir returns the default model storage directory (~/.local/share/tomoe/models/).
+// Respects $XDG_DATA_HOME if set.
 func ModelDir() string {
-	return filepath.Join(DataDir(), "models")
+	dir := os.Getenv("XDG_DATA_HOME")
+	if dir == "" {
+		home, err := os.UserHomeDir()
+		if err != nil {
+			home = os.Getenv("HOME")
+		}
+		dir = filepath.Join(home, ".local", "share")
+	}
+	return filepath.Join(dir, "tomoe", "models")
 }
 
-// SessionDir returns the session storage directory.
+// SessionDir returns the session storage directory (~/.local/share/tomoe/sessions/).
 func SessionDir() string {
 	return filepath.Join(DataDir(), "sessions")
 }
 
-// DataDir returns the base data directory. Linux: ~/.local/share/tomoe/
-// (honors $XDG_DATA_HOME). macOS: ~/Library/Application Support/Tomoe/.
-func DataDir() string {
-	return userDataDir()
+// UnrecognizedUIPendingDir returns the staging directory
+// (~/.local/share/tomoe/unrecognized-uis-pending/) internal/videohint
+// writes escalation snapshots to — a captured frame + metadata per
+// meeting-app UI its rule table doesn't recognize yet. This is
+// deliberately NOT the permanent library: a captured window can be the
+// wrong thing entirely (e.g. a chat tab, not an actual call), so
+// nothing here is treated as safe to keep or use for calibration until
+// a human reviews and approves it — see UnrecognizedUIApprovedDir and
+// `tomoe videohint`.
+func UnrecognizedUIPendingDir() string {
+	return filepath.Join(DataDir(), "unrecognized-uis-pending")
 }
 
-// LibDir returns the directory for additional shared libraries (e.g., GPU
-// provider .so/.dylib files downloaded by `make install-gpu`).
+// UnrecognizedUIApprovedDir returns the permanent escalation snapshot
+// library (~/.local/share/tomoe/unrecognized-uis-approved/) — where a
+// snapshot lands only once explicitly approved via `tomoe videohint
+// approve`, at which point it's fair game for writing a real rule from.
+func UnrecognizedUIApprovedDir() string {
+	return filepath.Join(DataDir(), "unrecognized-uis-approved")
+}
+
+// DataDir returns the base data directory (~/.local/share/tomoe/).
+func DataDir() string {
+	dir := os.Getenv("XDG_DATA_HOME")
+	if dir == "" {
+		home, err := os.UserHomeDir()
+		if err != nil {
+			home = os.Getenv("HOME")
+		}
+		dir = filepath.Join(home, ".local", "share")
+	}
+	return filepath.Join(dir, "tomoe")
+}
+
+// LibDir returns the directory for additional shared libraries (~/.local/share/tomoe/lib/).
+// Used for GPU provider .so files downloaded by `make install-gpu`.
 func LibDir() string {
 	return filepath.Join(DataDir(), "lib")
 }
@@ -152,6 +259,51 @@ func Load(path string) (*Config, error) {
 	}
 
 	return cfg, nil
+}
+
+// Watch polls path's mtime every interval and calls onChange with a
+// freshly reloaded Config whenever it changes -- the mechanism behind
+// retuning live speaker-clustering/video-hint-timing behavior without
+// a rebuild or even a relaunch (see MeetingConfig's doc comment).
+// onChange is never called concurrently with itself, and never for
+// the file's state as of when Watch was called (only for a real
+// change made afterward). A reload that fails to parse is logged and
+// skipped, leaving whatever's currently applied in place rather than
+// falling back to defaults. Returns a stop func; safe to call more
+// than once.
+func Watch(path string, interval time.Duration, onChange func(*Config)) (stop func()) {
+	var lastMod time.Time
+	if info, err := os.Stat(path); err == nil {
+		lastMod = info.ModTime()
+	}
+
+	done := make(chan struct{})
+	var stopOnce sync.Once
+
+	go func() {
+		ticker := time.NewTicker(interval)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-done:
+				return
+			case <-ticker.C:
+				info, err := os.Stat(path)
+				if err != nil || !info.ModTime().After(lastMod) {
+					continue
+				}
+				lastMod = info.ModTime()
+				cfg, err := Load(path)
+				if err != nil {
+					fmt.Printf("config: reload of %s failed, keeping previous values: %v\n", path, err)
+					continue
+				}
+				onChange(cfg)
+			}
+		}
+	}()
+
+	return func() { stopOnce.Do(func() { close(done) }) }
 }
 
 // Save writes the config to the given path, creating parent directories as needed.

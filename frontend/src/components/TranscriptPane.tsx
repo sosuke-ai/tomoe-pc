@@ -14,10 +14,13 @@ function formatTime(seconds: number): string {
 }
 
 function speakerClass(speaker: string): string {
+  // startsWith, not ===: once a video hint attaches a name, the label
+  // becomes "Person 1 (Natalia Rami...)" — still the same speaker, and
+  // should keep the same color.
   if (speaker === 'You') return 'you';
-  if (speaker === 'Person 1') return 'person-1';
-  if (speaker === 'Person 2') return 'person-2';
-  if (speaker === 'Person 3') return 'person-3';
+  if (speaker.startsWith('Person 1')) return 'person-1';
+  if (speaker.startsWith('Person 2')) return 'person-2';
+  if (speaker.startsWith('Person 3')) return 'person-3';
   return 'other';
 }
 
@@ -43,7 +46,7 @@ export default function TranscriptPane({ segments, isRecording }: Props) {
   return (
     <div className="transcript-pane">
       {segments.map((seg) => (
-        <div key={seg.id} className="segment">
+        <div key={seg.id} className={`segment ${seg.status ? 'segment-pending' : ''}`}>
           <span className="timestamp">[{formatTime(seg.start_time)}]</span>
           <span className={`speaker ${speakerClass(seg.speaker)}`}>
             {seg.speaker}:
@@ -52,6 +55,16 @@ export default function TranscriptPane({ segments, isRecording }: Props) {
             <span className="lang-badge">{seg.language.toUpperCase()}</span>
           )}
           <span className="text">{seg.text}</span>
+          {seg.status === 'live' && (
+            <span className="refining-indicator" title="Still speaking — this line will keep growing">
+              listening…
+            </span>
+          )}
+          {seg.status === 'pending' && (
+            <span className="refining-indicator" title="Still refining this line for accuracy">
+              refining…
+            </span>
+          )}
         </div>
       ))}
       <div ref={endRef} />

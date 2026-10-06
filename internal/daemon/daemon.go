@@ -17,11 +17,13 @@ import (
 	"github.com/sosuke-ai/tomoe-pc/internal/hotkey"
 	"github.com/sosuke-ai/tomoe-pc/internal/live"
 	"github.com/sosuke-ai/tomoe-pc/internal/meeting"
+	"github.com/sosuke-ai/tomoe-pc/internal/meetingaudio"
 	"github.com/sosuke-ai/tomoe-pc/internal/models"
 	"github.com/sosuke-ai/tomoe-pc/internal/platform"
 	"github.com/sosuke-ai/tomoe-pc/internal/session"
 	"github.com/sosuke-ai/tomoe-pc/internal/speaker"
 	"github.com/sosuke-ai/tomoe-pc/internal/transcribe"
+	"github.com/sosuke-ai/tomoe-pc/internal/videohint"
 )
 
 // Daemon orchestrates the hotkey → capture → transcribe → clipboard pipeline,
@@ -37,7 +39,11 @@ type Daemon struct {
 	tracker       *speaker.Tracker
 	store         *session.Store
 	modelStatus   *models.Status
-	detector      meeting.Detector
+	detector      *meeting.Detector
+	// streamingEngine powers live transcription's realtime ("pass 1")
+	// pass; nil if the English streaming model isn't downloaded, in
+	// which case sessions fall back to today's single-pass behavior.
+	streamingEngine transcribe.StreamingEngine
 
 	// Background save pipeline. Each meeting stop enqueues; one worker
 	// drains the queue serially so concurrent diarization can't corrupt
@@ -52,12 +58,13 @@ const saveQueueDepth = 16
 
 // MeetingOpts holds optional dependencies for meeting recording mode.
 type MeetingOpts struct {
-	MeetingHotkey hotkey.Listener
-	Embedder      *speaker.Embedder
-	Tracker       *speaker.Tracker
-	Store         *session.Store
-	ModelStatus   *models.Status
-	Detector      meeting.Detector
+	MeetingHotkey   hotkey.Listener
+	Embedder        *speaker.Embedder
+	Tracker         *speaker.Tracker
+	Store           *session.Store
+	ModelStatus     *models.Status
+	Detector        *meeting.Detector
+	StreamingEngine transcribe.StreamingEngine
 }
 
 // New creates a Daemon with the given dependencies.
@@ -74,6 +81,7 @@ func New(cfg *config.Config, engines *transcribe.EngineSet, svc *platform.Servic
 		d.store = opts.Store
 		d.modelStatus = opts.ModelStatus
 		d.detector = opts.Detector
+		d.streamingEngine = opts.StreamingEngine
 	}
 	return d
 }
@@ -105,166 +113,174 @@ func (d *Daemon) Run(ctx context.Context) error {
 			defaultLang = d.cfg.Multilingual.DefaultLang
 		}
 	}
-	d.tray = startDaemonTray(languages, defaultLang)
-	defer d.tray.Close()
+	// runWithTray owns the system tray for the process lifetime. On Linux
+	// this just starts systray in a goroutine and calls body immediately
+	// (unchanged from before); on darwin, Cocoa requires systray's native
+	// loop to run on the actual OS main thread, so runWithTray calls
+	// systray.Run itself (blocking) and runs body in a goroutine from
+	// inside onReady instead. See run_linux.go / run_darwin.go.
+	return runWithTray(languages, defaultLang, func(tray *daemonTray) error {
+		d.tray = tray
+		defer d.tray.Close()
 
-	// Register dictation hotkey
-	if err := d.svc.Hotkey.Register(); err != nil {
-		return fmt.Errorf("registering dictation hotkey: %w", err)
-	}
-
-	// Register meeting hotkey (optional)
-	var meetingCh <-chan struct{}
-	if d.meetingHotkey != nil {
-		if err := d.meetingHotkey.Register(); err != nil {
-			fmt.Fprintf(os.Stderr, "Warning: could not register meeting hotkey: %v\n", err)
-		} else {
-			meetingCh = d.meetingHotkey.Keydown()
+		// Register dictation hotkey
+		if err := d.svc.Hotkey.Register(); err != nil {
+			return fmt.Errorf("registering dictation hotkey: %w", err)
 		}
-	}
 
-	// Start meeting auto-detector (optional)
-	var detectCh <-chan meeting.MeetingEvent
-	if d.detector != nil {
-		if err := d.detector.Start(ctx); err != nil {
-			fmt.Fprintf(os.Stderr, "Warning: meeting auto-detect unavailable: %v\n", err)
-		} else {
-			detectCh = d.detector.Events()
-			defer d.detector.Stop()
-		}
-	}
-
-	// Signal handling
-	sigCh := make(chan os.Signal, 1)
-	signal.Notify(sigCh, syscall.SIGTERM, syscall.SIGINT)
-	defer signal.Stop(sigCh)
-
-	bindings := d.cfg.Hotkey.Binding + " for dictation"
-	if meetingCh != nil {
-		meetingBinding := d.cfg.Hotkey.MeetingBinding
-		if meetingBinding == "" {
-			meetingBinding = "Super+Shift+X"
-		}
-		bindings += ", " + meetingBinding + " for meeting"
-	}
-	_ = d.svc.Notifier.Send("Tomoe", fmt.Sprintf("Ready — %s", bindings))
-	fmt.Printf("Tomoe daemon started. Hotkeys: %s\n", bindings)
-
-	// State
-	var dictState *streamingDictation
-	var meetState *meetingState
-
-	// Auto-stop channel — signalled by streaming dictation on silence timeout
-	autoStopCh := make(chan struct{}, 1)
-
-	// toggleDictation handles start/stop dictation from any trigger (hotkey or tray).
-	toggleDictation := func(lang string) {
-		if meetState != nil {
-			return // ignore dictation while meeting active
-		}
-		if dictState == nil {
-			ds, err := d.startStreamingDictation(ctx, autoStopCh, lang)
-			if err != nil {
-				_ = d.svc.Notifier.Send("Tomoe", fmt.Sprintf("Dictation failed: %v", err))
-				fmt.Printf("Error starting dictation: %v\n", err)
-				return
+		// Register meeting hotkey (optional)
+		var meetingCh <-chan struct{}
+		if d.meetingHotkey != nil {
+			if err := d.meetingHotkey.Register(); err != nil {
+				fmt.Fprintf(os.Stderr, "Warning: could not register meeting hotkey: %v\n", err)
+			} else {
+				meetingCh = d.meetingHotkey.Keydown()
 			}
-			dictState = ds
-			d.tray.SetDictating()
-			_ = d.svc.Notifier.Send("Tomoe", fmt.Sprintf("Dictating (%s)...", lang))
-			fmt.Printf("Streaming dictation started (%s)...\n", lang)
-		} else {
-			d.stopDictation(dictState)
-			dictState = nil
 		}
-	}
 
-	// toggleMeeting handles start/stop meeting from any trigger (hotkey or tray).
-	toggleMeeting := func(lang string) {
-		if dictState != nil {
-			return // ignore meeting while dictating
-		}
-		if meetState == nil {
-			ms, err := d.startMeetingWithPlatform(ctx, "", lang)
-			if err != nil {
-				_ = d.svc.Notifier.Send("Tomoe", fmt.Sprintf("Meeting start failed: %v", err))
-				fmt.Printf("Error starting meeting: %v\n", err)
-				return
+		// Start meeting auto-detector (optional)
+		var detectCh <-chan meeting.MeetingEvent
+		if d.detector != nil {
+			if err := d.detector.Start(ctx); err != nil {
+				fmt.Fprintf(os.Stderr, "Warning: meeting auto-detect unavailable: %v\n", err)
+			} else {
+				detectCh = d.detector.Events()
+				defer d.detector.Stop()
 			}
-			meetState = ms
-			d.tray.SetMeetingRecording()
-			_ = d.svc.Notifier.Send("Tomoe", fmt.Sprintf("Meeting recording started (%s)", lang))
-			fmt.Printf("Meeting recording started (%s)...\n", lang)
-		} else {
-			d.stopMeeting(meetState)
-			meetState = nil
 		}
-	}
 
-	for {
-		select {
-		case <-ctx.Done():
-			fmt.Println("Shutting down...")
-			d.cleanupAll(dictState, meetState)
-			return nil
+		// Signal handling
+		sigCh := make(chan os.Signal, 1)
+		signal.Notify(sigCh, syscall.SIGTERM, syscall.SIGINT)
+		defer signal.Stop(sigCh)
 
-		case sig := <-sigCh:
-			fmt.Printf("Received %s, shutting down...\n", sig)
-			d.cleanupAll(dictState, meetState)
-			return nil
+		bindings := d.cfg.Hotkey.Binding + " for dictation"
+		if meetingCh != nil {
+			meetingBinding := d.cfg.Hotkey.MeetingBinding
+			if meetingBinding == "" {
+				meetingBinding = "Super+Shift+X"
+			}
+			bindings += ", " + meetingBinding + " for meeting"
+		}
+		_ = d.svc.Notifier.Send("Tomoe", fmt.Sprintf("Ready — %s", bindings))
+		fmt.Printf("Tomoe daemon started. Hotkeys: %s\n", bindings)
 
-		case <-d.tray.quitCh:
-			fmt.Println("Quit from tray, shutting down...")
-			d.cleanupAll(dictState, meetState)
-			return nil
+		// State
+		var dictState *streamingDictation
+		var meetState *meetingState
 
-		case <-d.svc.Hotkey.Keydown():
-			toggleDictation(defaultLang)
+		// Auto-stop channel — signalled by streaming dictation on silence timeout
+		autoStopCh := make(chan struct{}, 1)
 
-		case lang := <-d.tray.dictationCh:
-			toggleDictation(lang)
-
-		case <-autoStopCh:
-			if dictState != nil {
-				timeout := d.silenceTimeout()
-				fmt.Printf("Auto-stopping dictation after %.0fs of silence\n", timeout.Seconds())
-				_ = d.svc.Notifier.Send("Tomoe", "Dictation auto-stopped (silence)")
+		// toggleDictation handles start/stop dictation from any trigger (hotkey or tray).
+		toggleDictation := func(lang string) {
+			if meetState != nil {
+				return // ignore dictation while meeting active
+			}
+			if dictState == nil {
+				ds, err := d.startStreamingDictation(ctx, autoStopCh, lang)
+				if err != nil {
+					_ = d.svc.Notifier.Send("Tomoe", fmt.Sprintf("Dictation failed: %v", err))
+					fmt.Printf("Error starting dictation: %v\n", err)
+					return
+				}
+				dictState = ds
+				d.tray.SetDictating()
+				_ = d.svc.Notifier.Send("Tomoe", fmt.Sprintf("Dictating (%s)...", lang))
+				fmt.Printf("Streaming dictation started (%s)...\n", lang)
+			} else {
 				d.stopDictation(dictState)
 				dictState = nil
 			}
+		}
 
-		case <-meetingCh:
-			toggleMeeting(defaultLang)
-
-		case lang := <-d.tray.meetingCh:
-			toggleMeeting(lang)
-
-		case evt := <-detectCh:
-			switch evt.Type {
-			case meeting.MeetingStarted:
-				if dictState != nil || meetState != nil {
-					break // ignore if already recording
-				}
-				platform := string(evt.Platform)
-				ms, err := d.startMeetingWithPlatform(ctx, platform, defaultLang)
+		// toggleMeeting handles start/stop meeting from any trigger (hotkey or tray).
+		toggleMeeting := func(lang string) {
+			if dictState != nil {
+				return // ignore meeting while dictating
+			}
+			if meetState == nil {
+				ms, err := d.startMeetingWithPlatform(ctx, "", lang)
 				if err != nil {
-					_ = d.svc.Notifier.Send("Tomoe", fmt.Sprintf("Auto-detect meeting start failed: %v", err))
-					fmt.Printf("Error auto-starting meeting: %v\n", err)
-					break
+					_ = d.svc.Notifier.Send("Tomoe", fmt.Sprintf("Meeting start failed: %v", err))
+					fmt.Printf("Error starting meeting: %v\n", err)
+					return
 				}
 				meetState = ms
 				d.tray.SetMeetingRecording()
-				msg := fmt.Sprintf("%s meeting detected — recording started", platform)
-				_ = d.svc.Notifier.Send("Tomoe", msg)
-				fmt.Println(msg)
-			case meeting.MeetingStopped:
-				if meetState != nil {
-					d.stopMeeting(meetState)
-					meetState = nil
+				_ = d.svc.Notifier.Send("Tomoe", fmt.Sprintf("Meeting recording started (%s)", lang))
+				fmt.Printf("Meeting recording started (%s)...\n", lang)
+			} else {
+				d.stopMeeting(meetState)
+				meetState = nil
+			}
+		}
+
+		for {
+			select {
+			case <-ctx.Done():
+				fmt.Println("Shutting down...")
+				d.cleanupAll(dictState, meetState)
+				return nil
+
+			case sig := <-sigCh:
+				fmt.Printf("Received %s, shutting down...\n", sig)
+				d.cleanupAll(dictState, meetState)
+				return nil
+
+			case <-d.tray.quitCh:
+				fmt.Println("Quit from tray, shutting down...")
+				d.cleanupAll(dictState, meetState)
+				return nil
+
+			case <-d.svc.Hotkey.Keydown():
+				toggleDictation(defaultLang)
+
+			case lang := <-d.tray.dictationCh:
+				toggleDictation(lang)
+
+			case <-autoStopCh:
+				if dictState != nil {
+					timeout := d.silenceTimeout()
+					fmt.Printf("Auto-stopping dictation after %.0fs of silence\n", timeout.Seconds())
+					_ = d.svc.Notifier.Send("Tomoe", "Dictation auto-stopped (silence)")
+					d.stopDictation(dictState)
+					dictState = nil
+				}
+
+			case <-meetingCh:
+				toggleMeeting(defaultLang)
+
+			case lang := <-d.tray.meetingCh:
+				toggleMeeting(lang)
+
+			case evt := <-detectCh:
+				switch evt.Type {
+				case meeting.MeetingStarted:
+					if dictState != nil || meetState != nil {
+						break // ignore if already recording
+					}
+					platform := string(evt.Platform)
+					ms, err := d.startMeetingWithPlatform(ctx, platform, defaultLang)
+					if err != nil {
+						_ = d.svc.Notifier.Send("Tomoe", fmt.Sprintf("Auto-detect meeting start failed: %v", err))
+						fmt.Printf("Error auto-starting meeting: %v\n", err)
+						break
+					}
+					meetState = ms
+					d.tray.SetMeetingRecording()
+					msg := fmt.Sprintf("%s meeting detected — recording started", platform)
+					_ = d.svc.Notifier.Send("Tomoe", msg)
+					fmt.Println(msg)
+				case meeting.MeetingStopped:
+					if meetState != nil {
+						d.stopMeeting(meetState)
+						meetState = nil
+					}
 				}
 			}
 		}
-	}
+	})
 }
 
 func (d *Daemon) cleanupAll(dict *streamingDictation, meet *meetingState) {
@@ -358,9 +374,10 @@ func (d *Daemon) stopDictation(ds *streamingDictation) {
 // --- Meeting Recording ---
 
 type meetingState struct {
-	coordinator *live.Coordinator
-	session     *session.Session
-	done        chan struct{}
+	coordinator     *live.Coordinator
+	session         *session.Session
+	done            chan struct{}
+	videoHintCancel context.CancelFunc
 }
 
 func (d *Daemon) startMeetingWithPlatform(ctx context.Context, platform string, lang string) (*meetingState, error) {
@@ -376,6 +393,11 @@ func (d *Daemon) startMeetingWithPlatform(ctx context.Context, platform string, 
 		VADPath:           vadPath,
 		SegmentBufferSize: 64,
 	}
+	// Realtime pass is English-only (see internal/transcribe's
+	// StreamingEngine); other languages keep today's single-pass path.
+	if lang == "en" {
+		cfg.StreamingEngine = d.streamingEngine
+	}
 
 	// Set up mic capturer
 	micDevice := d.cfg.Audio.Device
@@ -388,18 +410,23 @@ func (d *Daemon) startMeetingWithPlatform(ctx context.Context, platform string, 
 	}
 	cfg.MicCapturer = audio.NewStreamCapturer(micCapturer, audio.DefaultWindowSize, 128)
 
-	// Set up monitor capturer (optional)
-	monitorDevice := d.cfg.Meeting.MonitorDevice
-	if monitorDevice == "" {
-		monitorDevice = audio.DefaultMonitorDevice()
+	// Set up monitor capturer (optional) — the second audio source: a
+	// PulseAudio monitor device on Linux (config.toml's monitor_device,
+	// falling back to the system default if empty), or on macOS a
+	// specific app's PID or "everything" (see internal/meetingaudio) --
+	// the CLI daemon has no interactive picker, so this is
+	// config.toml-driven; leaving monitor_device empty means "no
+	// monitor" on macOS specifically (a PID wouldn't survive an app
+	// restart anyway), unlike Linux's "use the default device" meaning
+	// for the same empty value.
+	monCapturer, err := meetingaudio.NewMonitorSource(d.cfg.Meeting.MonitorDevice)
+	if err != nil {
+		cfg.MicCapturer.Close()
+		return nil, fmt.Errorf("creating monitor capturer: %w", err)
 	}
-	if monitorDevice != "" {
-		monCapturer, err := audio.NewCapturer(monitorDevice, audio.Monitor)
-		if err != nil {
-			cfg.MicCapturer.Close()
-			return nil, fmt.Errorf("creating monitor capturer: %w", err)
-		}
-		cfg.MonitorCapturer = audio.NewStreamCapturer(monCapturer, audio.DefaultWindowSize, 128)
+	if monCapturer != nil {
+		cfg.MonitorCapturer = monCapturer
+		cfg.SkipMonitorDiarization = d.cfg.Meeting.MonitorDevice == "everything"
 	}
 
 	// Reset speaker tracker
@@ -422,7 +449,7 @@ func (d *Daemon) startMeetingWithPlatform(ctx context.Context, platform string, 
 	// Create session
 	var sources []string
 	sources = append(sources, "mic")
-	if monitorDevice != "" {
+	if cfg.MonitorCapturer != nil {
 		sources = append(sources, "monitor")
 	}
 
@@ -439,14 +466,20 @@ func (d *Daemon) startMeetingWithPlatform(ctx context.Context, platform string, 
 		Sources:   sources,
 	}
 
-	// Drain segments in a goroutine
+	// Drain segments (and, for two-pass sessions, their refinements) in
+	// their own goroutines, closing done only once both have finished —
+	// same reasoning as internal/live's own closer goroutine: a
+	// refinement queued right at shutdown should still get applied
+	// before this daemon considers the meeting fully stopped.
 	done := make(chan struct{})
 	var mu sync.Mutex
+	var drainWG sync.WaitGroup
+	drainWG.Add(2)
 	go func() {
-		defer close(done)
+		defer drainWG.Done()
 		for seg := range coordinator.Segments() {
 			mu.Lock()
-			sess.Segments = append(sess.Segments, seg)
+			sess.UpsertSegment(seg)
 			mu.Unlock()
 			if seg.Language != "" {
 				fmt.Printf("[%s] [%s] %s: %s\n", formatTimestamp(seg.StartTime), seg.Language, seg.Speaker, seg.Text)
@@ -455,15 +488,60 @@ func (d *Daemon) startMeetingWithPlatform(ctx context.Context, platform string, 
 			}
 		}
 	}()
+	go func() {
+		defer drainWG.Done()
+		for seg := range coordinator.SegmentUpdates() {
+			// Upsert rather than update in place: a revision can overtake
+			// its segment, which travels on the other channel.
+			mu.Lock()
+			sess.UpsertSegment(seg)
+			mu.Unlock()
+			fmt.Printf("[%s] %s: %s (refined)\n", formatTimestamp(seg.StartTime), seg.Speaker, seg.Text)
+		}
+	}()
+	go func() {
+		drainWG.Wait()
+		close(done)
+	}()
+
+	// Screen-based speaker-label hints (macOS only; no-op on Linux —
+	// see internal/videohint). Its own context, not the daemon-lifetime
+	// ctx passed in above, since it must stop when this meeting does,
+	// not when the daemon exits — same reasoning as streamingDictation's
+	// cancel field elsewhere in this file.
+	videoHintCtx, videoHintCancel := context.WithCancel(ctx)
+	videoHintEvents := make(chan videohint.Event, 32)
+	pollInterval, triggerDebounce := d.cfg.Meeting.VideoHintTiming()
+	go videohint.Poll(videoHintCtx, pollInterval, triggerDebounce, coordinator.HintNeeded(), videoHintEvents)
+	go func() {
+		for {
+			select {
+			case <-videoHintCtx.Done():
+				return
+			case ev, ok := <-videoHintEvents:
+				if !ok {
+					return
+				}
+				fmt.Printf("[videohint] %s: %s\n", ev.Stage, ev.Detail)
+				if ev.Stage == videohint.StageOCRHit && ev.Name != "" && d.tracker != nil {
+					if !d.tracker.SetHintForRecent(ev.Name, videohint.HintAttachMaxAge) {
+						fmt.Printf("[videohint] hint %q had no recent enough speaker to attach to\n", ev.Name)
+					}
+				}
+			}
+		}
+	}()
 
 	return &meetingState{
-		coordinator: coordinator,
-		session:     sess,
-		done:        done,
+		coordinator:     coordinator,
+		session:         sess,
+		done:            done,
+		videoHintCancel: videoHintCancel,
 	}, nil
 }
 
 func (d *Daemon) stopMeeting(ms *meetingState) {
+	ms.videoHintCancel()
 	ms.coordinator.Stop()
 	<-ms.done
 

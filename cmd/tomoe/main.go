@@ -4,9 +4,13 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"time"
 
 	"github.com/spf13/cobra"
 
+	"github.com/schollz/progressbar/v3"
+
+	"github.com/sosuke-ai/tomoe-pc/internal/appinit"
 	"github.com/sosuke-ai/tomoe-pc/internal/audio"
 	"github.com/sosuke-ai/tomoe-pc/internal/config"
 	"github.com/sosuke-ai/tomoe-pc/internal/daemon"
@@ -18,7 +22,24 @@ import (
 	"github.com/sosuke-ai/tomoe-pc/internal/session"
 	"github.com/sosuke-ai/tomoe-pc/internal/speaker"
 	"github.com/sosuke-ai/tomoe-pc/internal/transcribe"
+	"github.com/sosuke-ai/tomoe-pc/internal/videohint"
 )
+
+// cliDownloadProgress returns a models.ProgressFunc that drives one
+// terminal progress bar per download step -- a new step name (the
+// previous one having finished) starts a fresh bar, since Content-Length
+// (and so each step's total) is only known once its own request starts.
+func cliDownloadProgress() models.ProgressFunc {
+	var bar *progressbar.ProgressBar
+	var curStep string
+	return func(step string, downloaded, total int64) {
+		if step != curStep {
+			curStep = step
+			bar = progressbar.DefaultBytes(total, step)
+		}
+		_ = bar.Set64(downloaded)
+	}
+}
 
 func main() {
 	// Re-exec with LD_LIBRARY_PATH if GPU libraries are installed.
@@ -48,6 +69,7 @@ func init() {
 	rootCmd.AddCommand(devicesCmd)
 	rootCmd.AddCommand(stopCmd)
 	rootCmd.AddCommand(versionCmd)
+	rootCmd.AddCommand(videohintCmd)
 }
 
 // startCmd is an alias for the root command.
@@ -58,29 +80,21 @@ var startCmd = &cobra.Command{
 }
 
 func runStart(cmd *cobra.Command, args []string) error {
-	if !config.Exists() {
-		fmt.Println("First run detected, running auto-init...")
-		if err := runInit(cmd, args); err != nil {
-			return err
-		}
-	}
-
 	// Check if already running
 	if daemon.IsRunning() {
 		return fmt.Errorf("daemon already running (PID %d)", daemon.ReadPID())
 	}
 
-	// Load config
-	cfg, err := config.Load(config.Path())
+	// Same init flow tomoe-gui runs on every launch: generates
+	// config.toml on a true first run, and downloads any model that
+	// isn't already present (a no-op check for everything else).
+	result, err := appinit.EnsureInitialized(cliDownloadProgress())
 	if err != nil {
-		return fmt.Errorf("loading config: %w", err)
+		return fmt.Errorf("initializing: %w", err)
 	}
-
-	// Check models
-	mgr := models.NewManager(cfg.Transcription.ModelPath)
-	status := mgr.Check()
+	cfg, status := result.Config, result.ModelStatus
 	if !status.Ready() {
-		return fmt.Errorf("models not downloaded (run 'tomoe init' or 'tomoe model download')")
+		return fmt.Errorf("model download did not complete (run 'tomoe model download' to retry)")
 	}
 
 	// Create transcription engines (multilingual if configured)
@@ -133,14 +147,55 @@ func runStart(cmd *cobra.Command, args []string) error {
 			if cfg.Meeting.SpeakerThreshold > 0 {
 				threshold = cfg.Meeting.SpeakerThreshold
 			}
-			opts.Tracker = speaker.NewTracker(threshold)
+			tracker := speaker.NewTracker(threshold)
+			tracker.SetTuning(speaker.TuningFromSeconds(
+				cfg.Meeting.SpeakerThreshold,
+				cfg.Meeting.StickyGraceWindow,
+				cfg.Meeting.StickyThresholdMargin,
+				cfg.Meeting.MinAssignDuration,
+				cfg.Meeting.ShortSegmentGraceWindow,
+			))
+			opts.Tracker = tracker
 			defer emb.Close()
+
+			// Watch config.toml so clustering tuning can be retuned
+			// live -- no rebuild, no relaunch. See MeetingConfig's doc
+			// comment for why this exists.
+			stopConfigWatch := config.Watch(config.Path(), 2*time.Second, func(newCfg *config.Config) {
+				tracker.SetTuning(speaker.TuningFromSeconds(
+					newCfg.Meeting.SpeakerThreshold,
+					newCfg.Meeting.StickyGraceWindow,
+					newCfg.Meeting.StickyThresholdMargin,
+					newCfg.Meeting.MinAssignDuration,
+					newCfg.Meeting.ShortSegmentGraceWindow,
+				))
+				fmt.Printf("config: reloaded speaker clustering tuning: %+v\n", tracker.Tuning())
+			})
+			defer stopConfigWatch()
 		}
 	}
 
 	// Create meeting auto-detector (optional)
 	if cfg.Meeting.AutoDetect {
 		opts.Detector = meeting.NewDetector()
+	}
+
+	// Create the realtime streaming engine (optional — only if the
+	// English streaming model is downloaded; see internal/live's
+	// two-pass pipeline). Sessions fall back to single-pass without it.
+	if status.EnglishStreamingReady && cfg.Transcription.TwoPass {
+		streamingEngine, err := transcribe.NewStreamingEngine(transcribe.StreamingConfig{
+			EncoderPath: status.EnglishStreamingEncoderPath,
+			DecoderPath: status.EnglishStreamingDecoderPath,
+			JoinerPath:  status.EnglishStreamingJoinerPath,
+			TokensPath:  status.EnglishStreamingTokensPath,
+		})
+		if err == nil {
+			opts.StreamingEngine = streamingEngine
+			defer streamingEngine.Close()
+		} else {
+			fmt.Fprintf(os.Stderr, "Warning: failed to load English streaming model: %v (live transcription will use single-pass mode)\n", err)
+		}
 	}
 
 	// Run daemon
@@ -174,13 +229,22 @@ func runInit(cmd *cobra.Command, args []string) error {
 	fmt.Println("=== Tomoe Auto-Init ===")
 	fmt.Println()
 
-	// Detect GPU
-	fmt.Println("Detecting GPU...")
-	gpuInfo := gpu.Detect()
-	fmt.Println(gpuInfo)
+	configExisted := config.Exists()
+
+	// Same init flow tomoe-gui runs on every launch (see appinit):
+	// generates config.toml only if one doesn't exist yet -- re-running
+	// `tomoe init` must not silently reset an already-customized config
+	// back to defaults -- and downloads any model that isn't already
+	// present.
+	result, err := appinit.EnsureInitialized(cliDownloadProgress())
+	if err != nil {
+		return err
+	}
+
+	fmt.Println("GPU:")
+	fmt.Println(result.GPU)
 	fmt.Println()
 
-	// Detect display server
 	displayServer := os.Getenv("XDG_SESSION_TYPE")
 	if displayServer == "" {
 		displayServer = "unknown"
@@ -188,27 +252,14 @@ func runInit(cmd *cobra.Command, args []string) error {
 	fmt.Printf("Display server: %s\n", displayServer)
 	fmt.Println()
 
-	// Generate config
-	cfg := config.DefaultConfig()
-	cfg.Transcription.GPUEnabled = gpuInfo.Available && gpuInfo.Sufficient
-
-	cfgPath := config.Path()
-	if err := config.Save(cfg, cfgPath); err != nil {
-		return fmt.Errorf("saving config: %w", err)
-	}
-	fmt.Printf("Config written to: %s\n", cfgPath)
-	fmt.Println()
-
-	// Download models
-	mgr := models.NewManager(cfg.Transcription.ModelPath)
-	if err := mgr.Download(false); err != nil {
-		return fmt.Errorf("downloading models: %w", err)
+	if configExisted {
+		fmt.Printf("Config already present, left unchanged: %s\n", config.Path())
+	} else {
+		fmt.Printf("Config written to: %s\n", config.Path())
 	}
 	fmt.Println()
 
-	// Summary
-	modelStatus := mgr.Check()
-	fmt.Println(modelStatus)
+	fmt.Println(result.ModelStatus)
 	fmt.Println()
 
 	fmt.Println("=== Init complete ===")
@@ -315,21 +366,29 @@ var modelDownloadCmd = &cobra.Command{
 		multilingual, _ := cmd.Flags().GetBool("multilingual")
 		mgr := models.NewManager(config.ModelDir())
 
-		if err := mgr.Download(force); err != nil {
+		if err := mgr.Download(force, cliDownloadProgress()); err != nil {
 			return err
 		}
 
-		// Download multilingual models if enabled in config or explicitly requested
-		if !multilingual && config.Exists() {
-			cfg, err := config.Load(config.Path())
-			if err == nil && cfg.Multilingual.Enabled {
-				multilingual = true
+		// Download multilingual models if enabled in config or explicitly
+		// requested, and the streaming model if two-pass is on or
+		// --streaming asks for it.
+		streaming, _ := cmd.Flags().GetBool("streaming")
+		if config.Exists() {
+			if cfg, err := config.Load(config.Path()); err == nil {
+				multilingual = multilingual || cfg.Multilingual.Enabled
+				streaming = streaming || cfg.Transcription.TwoPass
+			}
+		}
+		if streaming {
+			if err := mgr.DownloadEnglishStreaming(force, cliDownloadProgress()); err != nil {
+				return err
 			}
 		}
 
 		if multilingual {
 			fmt.Println("\nDownloading multilingual models...")
-			if err := mgr.DownloadMultilingual(force); err != nil {
+			if err := mgr.DownloadMultilingual(force, cliDownloadProgress()); err != nil {
 				return err
 			}
 		}
@@ -341,6 +400,7 @@ var modelDownloadCmd = &cobra.Command{
 func init() {
 	modelDownloadCmd.Flags().Bool("force", false, "Force re-download even if models exist")
 	modelDownloadCmd.Flags().Bool("multilingual", false, "Download language identification and Bengali models (auto-detected from config)")
+	modelDownloadCmd.Flags().Bool("streaming", false, "Download the English streaming model two-pass uses (auto-detected from config)")
 }
 
 var modelStatusCmd = &cobra.Command{
@@ -643,6 +703,69 @@ var configCmd = &cobra.Command{
 		}
 
 		fmt.Print(string(data))
+		return nil
+	},
+}
+
+var videohintCmd = &cobra.Command{
+	Use:   "videohint",
+	Short: "Review meeting-window screenshots escalated for manual labeling-rule review (macOS)",
+	Long: "During macOS meeting mode, internal/videohint captures a screenshot whenever it sees a\n" +
+		"window it doesn't have a labeling rule for yet, staging it for review rather than using\n" +
+		"it automatically -- the matched window can be the wrong thing entirely (e.g. a chat tab,\n" +
+		"not an actual call). Nothing here is treated as safe to keep or use for calibration until\n" +
+		"you explicitly approve it.",
+}
+
+func init() {
+	videohintCmd.AddCommand(videohintListCmd)
+	videohintCmd.AddCommand(videohintApproveCmd)
+	videohintCmd.AddCommand(videohintDiscardCmd)
+}
+
+var videohintListCmd = &cobra.Command{
+	Use:   "list",
+	Short: "List pending snapshots awaiting review",
+	RunE: func(cmd *cobra.Command, args []string) error {
+		pending, err := videohint.ListPendingUnrecognizedUIs()
+		if err != nil {
+			return err
+		}
+		if len(pending) == 0 {
+			fmt.Println("No pending snapshots.")
+			return nil
+		}
+		for _, p := range pending {
+			fmt.Printf("%s  %-8s %dx%d  %s  %s\n",
+				p.Meta.Timestamp.Format("2006-01-02 15:04:05"), p.Meta.Platform,
+				p.Meta.Width, p.Meta.Height, p.ID, p.Meta.Reason)
+		}
+		return nil
+	},
+}
+
+var videohintApproveCmd = &cobra.Command{
+	Use:   "approve <id>",
+	Short: "Move a pending snapshot into the permanent unrecognized-UI library for future rule-writing",
+	Args:  cobra.ExactArgs(1),
+	RunE: func(cmd *cobra.Command, args []string) error {
+		if err := videohint.ApproveUnrecognizedUI(args[0]); err != nil {
+			return err
+		}
+		fmt.Printf("Approved %s\n", args[0])
+		return nil
+	},
+}
+
+var videohintDiscardCmd = &cobra.Command{
+	Use:   "discard <id>",
+	Short: "Permanently delete a pending snapshot without approving it",
+	Args:  cobra.ExactArgs(1),
+	RunE: func(cmd *cobra.Command, args []string) error {
+		if err := videohint.DiscardUnrecognizedUI(args[0]); err != nil {
+			return err
+		}
+		fmt.Printf("Discarded %s\n", args[0])
 		return nil
 	},
 }

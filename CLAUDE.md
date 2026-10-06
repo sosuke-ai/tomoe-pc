@@ -2,14 +2,16 @@
 
 ## Project Overview
 
-Local-first speech-to-text desktop application for Linux. Two modes of operation:
+Local-first speech-to-text desktop application, built for Linux; macOS
+support is in progress (see `docs/macos-support.md`), not yet build-ready.
+Two modes of operation:
 
 1. **CLI dictation** (`tomoe`) — global hotkey triggers mic capture, transcribes speech, pastes result into the focused window (terminal-aware: Ctrl+Shift+V for terminals, Ctrl+V otherwise)
 2. **Meeting transcription GUI** (`tomoe-gui`) — Wails v2 desktop app with live scrolling transcript, mic + system audio capture, speaker identification, session management, export
 
 - **License:** GPLv3
 - **Language:** Go 1.22+
-- **Target OS:** Ubuntu Linux 24.04+ (X11 primary, Wayland best-effort)
+- **Target OS:** Ubuntu Linux 24.04+ (X11 primary, Wayland best-effort) — shipping today. macOS — in progress, not yet build-ready.
 - **Audio:** PipeWire (with PulseAudio compat layer) via malgo/miniaudio
 - **GPU:** NVIDIA CUDA via ONNX Runtime, automatic CPU fallback
 - **GUI:** Wails v2 + React + TypeScript + Vite
@@ -21,6 +23,7 @@ Local-first speech-to-text desktop application for Linux. Two modes of operation
 ```
 Go binary → cgo → sherpa-onnx C API → ONNX Runtime (CUDA EP / CPU EP)
   → Parakeet TDT 0.6B v3 INT8 (encoder + decoder + joiner, 25 languages)
+  → English streaming Zipformer INT8 (~73MB on disk, ~310MB download; live pass-1 via OnlineRecognizer)
   → Bengali Zipformer transducer (~87MB, streaming via OnlineRecognizer)
   → Silero VAD (~2MB)
   → 3D-Speaker embedding model (~25MB)
@@ -62,6 +65,8 @@ Mic Capturer → StreamCapturer → VAD → Transcribe(lang) → Segment
 - **PulseAudio meeting detection**: Simultaneous source-output (mic) + sink-input (speaker) from the same PID reliably indicates an active meeting. cgo bindings to libpulse (`#cgo pkg-config: libpulse`) follow the same pattern as `hotkey_linux.go`: static C globals, thread-locked event loop, `//export` callbacks. Platform identified via native app name or `xdotool` window title matching for browser-based meetings.
 - **Manual language selection via EngineSet**: `EngineSet` holds a `map[string]Engine` (e.g., "en"→Parakeet, "bn"→Bengali Zipformer). Does NOT implement `Engine` — callers explicitly pick a language via `Get(lang)`. Tray sub-menus provide per-language start items; hotkey press uses the default language. Sessions store language code for re-transcription with a different engine.
 - **Hotword boosting**: sherpa-onnx supports `modified_beam_search` with `HotwordsFile` for Parakeet TDT. Works independently of multilingual. Configurable via `[transcription]` section in config.toml.
+- **macOS speaker naming (in progress)**: not a port of the Linux audio-only clustering approach — macOS has a second, independent naming signal Linux doesn't (Teams' visual active-speaker ring + name label, read via `internal/teamsvideo`). Plan is to keep `internal/speaker`'s embedding+clustering unchanged and *label* a cluster ID with a real name whenever a fresh video hint lands, carrying that label forward for the cluster's later turns — a cluster that never gets a hint still falls back to "Person N" exactly like Linux does today. See `docs/macos-support.md`.
+- **Two-pass transcription**: Parakeet TDT is an *offline* recognizer even in "live" mode — a full non-streaming decode per completed VAD segment — so nothing appeared until a pause. `internal/transcribe.StreamingEngine` (English streaming Zipformer INT8, `sherpa.OnlineRecognizer`) is pass 1: fed the same VAD windows, polled continuously for a growing partial hypothesis, so text appears as it's spoken. On segment completion, that partial text is emitted immediately (`session.Segment.Status: "pending"`); the segment's audio is also queued to `live.Coordinator`'s `refineWorker`, which re-decodes it through Parakeet (pass 2, full-context, higher fidelity) and supersedes it via `SegmentUpdates()` (`Status: ""`). English-only and off by default (`two_pass = false`, like the sticky-speaker and short-segment clustering rules: experimental until proven on real recordings) — nil `StreamingEngine` (model not downloaded, or a non-English session) falls back to the original single-pass behavior exactly.
 
 ## Project Structure
 
@@ -77,6 +82,7 @@ tomoe-pc/
 │   ├── config/             # TOML config
 │   ├── daemon/             # CLI daemon orchestration
 │   ├── gpu/                # GPU detection, ONNX Runtime EP selection
+│   ├── guestaudio/         # [macOS, in progress] ScreenCaptureKit window-audio tap (cgo + ObjC)
 │   ├── hotkey/             # Global hotkey (X11 key grabs with lock-mask handling)
 │   ├── langid/             # Spoken language identification (Whisper tiny INT8)
 │   ├── live/               # Live transcription coordinator + per-source pipelines
@@ -87,6 +93,7 @@ tomoe-pc/
 │   ├── session/            # Session storage, export (MD/TXT/SRT), audio (M4A)
 │   ├── sigfix/             # ONNX Runtime / WebKit signal handler fix
 │   ├── speaker/            # Speaker embedding extraction + cosine clustering
+│   ├── teamsvideo/         # [macOS, in progress] Teams window capture + active-speaker ring (cgo)
 │   └── transcribe/         # sherpa-onnx / Parakeet TDT integration
 ├── frontend/               # React + TypeScript + Vite
 │   └── src/
@@ -110,8 +117,10 @@ make test             # Run unit tests (stages frontend first)
 make vet              # Run go vet (stages frontend first)
 make lint             # Run golangci-lint (stages frontend first)
 make dev-gui          # Wails dev mode with hot-reload
-make download-model   # Download models (~375MB total)
+make download-model   # Download models (~375MB; plus ~310MB for the English streaming Zipformer when two_pass is on — its archive bundles unused fp32 weights alongside the int8 ones actually used)
 make install          # Install to $GOPATH/bin
+make dev-cert-mac     # One-time: create a stable local code-signing identity (macOS only)
+make install-gui-mac  # Rebuild GUI, (re)install /Applications/Tomoe.app + Dock icon (macOS only)
 make install-gpu      # Install CUDA toolkit + sherpa-onnx GPU libraries
 ```
 
@@ -166,12 +175,13 @@ tomoe model download      # Force re-download model
 tomoe model status        # Show model info + integrity check
 tomoe devices             # List audio input devices
 tomoe config              # Print current config
+tomoe session replay <id> # Replay a session's audio: default pipeline vs current config
 ```
 
 ## Coding Conventions
 
 - Use `internal/` for all non-main packages — nothing is exported outside the module
-- Platform-specific code uses `_linux.go` build tag suffix
+- Platform-specific code uses `_linux.go`/`_darwin.go` filename-suffix build constraints (applies to `.go`, `.c`, and `.m` files alike — no explicit `//go:build` comment needed, though the macOS packages add one anyway for clarity). `go build ./...` is not safe to run unscoped on a single platform — it hard-fails the moment it reaches a same-OS-only package (e.g. `cmd/hotkey-test`, an X11-only diagnostic CLI, on macOS). Build/test specific package paths instead, same as the Makefile already does for `./cmd/tomoe`.
 - Audio format: 16kHz mono PCM float32 (Parakeet TDT native input)
 - Config format: TOML via `pelletier/go-toml`
 - GUI build requires `-tags production,webkit2_41`
@@ -180,3 +190,4 @@ tomoe config              # Print current config
 ## Tech Spec
 
 The authoritative tech spec is at `docs/speech-to-text-tech-brief.md`.
+For the in-progress macOS port specifically, see `docs/macos-support.md`.

@@ -1,4 +1,4 @@
-.PHONY: dev-deps dev-tools stage-frontend fmt lint vet test test-integration test-coverage build build-gui build-cuda package install install-gpu clean download-model dev-gui
+.PHONY: dev-deps dev-tools stage-frontend fmt lint vet test test-integration test-coverage build build-gui build-cuda package install dev-cert-mac install-gui-mac install-gpu clean download-model dev-gui
 
 BINARY      := tomoe
 GUI_BINARY  := tomoe-gui
@@ -11,17 +11,40 @@ LINT_VERSION := v2.11.3
 SHERPA_VER   := v1.12.28
 TOMOE_LIB    := $(HOME)/.local/share/tomoe/lib
 
-# Auto-detect webkit2gtk for GUI build
+# macOS .app bundle install (install-gui-mac target)
+APP_NAME         := Tomoe
+APP_BUNDLE       := build/darwin/$(APP_NAME).app
+APPLICATIONS_DIR := /Applications
+# A stable local identity, not ad-hoc (`codesign --sign -`): ad-hoc
+# signatures have no consistent identity across rebuilds, and macOS
+# TCC (Screen Recording/Microphone/etc. grants) can silently stop
+# honoring a "Tomoe" entry the Settings UI still shows as enabled once
+# the signature backing it changes -- exactly the failure mode hit
+# testing this. Signing every build with the same self-signed identity
+# (see dev-cert-mac) keeps grants valid across rebuilds.
+CODESIGN_IDENTITY := Tomoe Dev Signing
+
+UNAME := $(shell uname)
+
+# Auto-detect webkit2gtk for GUI build (Linux only — macOS uses WKWebView
+# natively via Wails, no webkit2gtk-equivalent package to detect).
 HAS_WEBKIT := $(shell pkg-config --exists webkit2gtk-4.1 2>/dev/null && echo yes || echo no)
 
 ## Development setup ──────────────────────────────────────────────────
 
-dev-deps: ## Install Ubuntu system packages needed for development
+dev-deps: ## Install system packages needed for development (Ubuntu or macOS)
+ifeq ($(UNAME),Darwin)
+	@echo "macOS: hotkey (Carbon), clipboard/notify (osascript), and audio"
+	@echo "(malgo/CoreAudio) all use frameworks already in Xcode's SDK --"
+	@echo "no Homebrew packages needed for the CLI. Only Node is required:"
+	@command -v node >/dev/null 2>&1 || brew install node
+else
 	sudo apt install -y build-essential pkg-config \
 	  libx11-dev libxtst-dev libxkbcommon-dev \
 	  libasound-dev portaudio19-dev libportaudio2 libpulse-dev pulseaudio-utils \
 	  xclip xdotool wl-clipboard wtype libnotify-bin ffmpeg \
 	  libwebkit2gtk-4.1-dev libappindicator3-dev libgtk-3-dev
+endif
 	@echo "Installing Node.js dependencies for frontend..."
 	cd frontend && npm install
 
@@ -68,9 +91,16 @@ test-coverage: ## Run tests with coverage report
 
 ## Build ──────────────────────────────────────────────────────────────
 
-build: ## Build CLI binary (and GUI if webkit2gtk available)
+build: ## Build CLI binary (and GUI if webkit2gtk available, or always on macOS)
 	CGO_ENABLED=1 go build $(GOFLAGS) $(LDFLAGS) -o $(BINARY) ./cmd/tomoe
-ifeq ($(HAS_WEBKIT),yes)
+ifeq ($(UNAME),Darwin)
+	@echo "macOS: building frontend + GUI (WKWebView via Wails, no webkit2gtk needed)..."
+	cd frontend && npm install --silent && npm run build
+	mkdir -p cmd/tomoe-gui/frontend
+	rm -rf cmd/tomoe-gui/frontend/dist
+	cp -r frontend/dist cmd/tomoe-gui/frontend/dist
+	CGO_ENABLED=1 CGO_LDFLAGS="-framework UniformTypeIdentifiers" go build $(GOFLAGS) $(LDFLAGS) -tags production -o $(GUI_BINARY) ./cmd/tomoe-gui
+else ifeq ($(HAS_WEBKIT),yes)
 	@echo "webkit2gtk-4.1 detected, building frontend + GUI..."
 	cd frontend && npm install --silent && npm run build
 	mkdir -p cmd/tomoe-gui/frontend
@@ -81,29 +111,20 @@ else
 	@echo "webkit2gtk-4.1 not found, skipping GUI build."
 endif
 
-build-gui: build-frontend ## Build GUI binary only (requires webkit2gtk-4.1)
+build-gui: build-frontend ## Build GUI binary only (webkit2gtk-4.1 on Linux, WKWebView on macOS)
 	mkdir -p cmd/tomoe-gui/frontend
 	rm -rf cmd/tomoe-gui/frontend/dist
 	cp -r frontend/dist cmd/tomoe-gui/frontend/dist
+ifeq ($(UNAME),Darwin)
+	CGO_ENABLED=1 CGO_LDFLAGS="-framework UniformTypeIdentifiers" go build $(GOFLAGS) $(LDFLAGS) -tags production -o $(GUI_BINARY) ./cmd/tomoe-gui
+else
 	CGO_ENABLED=1 go build $(GOFLAGS) $(LDFLAGS) -tags production,webkit2_41 -o $(GUI_BINARY) ./cmd/tomoe-gui
+endif
 
 build-frontend: ## Build React frontend
 	cd frontend && npm install && npm run build
 
 build-cuda: build ## Same binary — CUDA EP is selected at runtime via config
-
-build-darwin: ## Cross-compile darwin/arm64 abstraction packages (validates interfaces)
-	@echo "Cross-compiling platform abstraction packages for darwin/arm64..."
-	@echo "Note: full app build requires CGO + macOS toolchain (run on a Mac or in CI)."
-	GOOS=darwin GOARCH=arm64 CGO_ENABLED=0 go build \
-		./internal/config \
-		./internal/clipboard \
-		./internal/hotkey \
-		./internal/audio \
-		./internal/notify \
-		./internal/meeting \
-		./internal/sigfix
-	@echo "darwin abstraction packages compile cleanly."
 
 dev-gui: ## Run Wails dev mode with hot-reload
 	cd frontend && npm install
@@ -122,6 +143,47 @@ install: build ## Install to GOPATH/bin
 ifeq ($(HAS_WEBKIT),yes)
 	install -m 755 $(GUI_BINARY) $(INSTALL_DIR)/$(GUI_BINARY)
 endif
+
+dev-cert-mac: ## One-time: create a stable local code-signing identity so Tomoe.app's TCC grants survive rebuilds (macOS only)
+ifneq ($(UNAME),Darwin)
+	$(error dev-cert-mac is macOS-only)
+endif
+	@if security find-certificate -c "$(CODESIGN_IDENTITY)" >/dev/null 2>&1; then \
+		echo "'$(CODESIGN_IDENTITY)' already exists in the login keychain, skipping."; \
+	else \
+		echo "Creating local code-signing identity '$(CODESIGN_IDENTITY)'..."; \
+		TMPD=$$(mktemp -d) && \
+		openssl req -x509 -newkey rsa:2048 -keyout $$TMPD/key.pem -out $$TMPD/cert.pem -days 3650 -nodes \
+		  -subj "/CN=$(CODESIGN_IDENTITY)" \
+		  -addext "basicConstraints=critical,CA:true" \
+		  -addext "keyUsage=critical,digitalSignature,keyCertSign" \
+		  -addext "extendedKeyUsage=critical,codeSigning" && \
+		security import $$TMPD/key.pem -k ~/Library/Keychains/login.keychain-db -A && \
+		security import $$TMPD/cert.pem -k ~/Library/Keychains/login.keychain-db -A && \
+		rm -rf $$TMPD; \
+		echo "Created '$(CODESIGN_IDENTITY)'. If macOS ever prompts for keychain access when codesign uses it, choose \"Always Allow\"."; \
+	fi
+
+install-gui-mac: build dev-cert-mac ## Rebuild the GUI and (re)install /Applications/Tomoe.app + Dock icon (macOS only)
+ifneq ($(UNAME),Darwin)
+	$(error install-gui-mac is macOS-only)
+endif
+	rm -rf $(APP_BUNDLE)
+	mkdir -p $(APP_BUNDLE)/Contents/MacOS
+	mkdir -p $(APP_BUNDLE)/Contents/Resources
+	cp $(GUI_BINARY) $(APP_BUNDLE)/Contents/MacOS/$(GUI_BINARY)
+	# The CLI rides along: after each saved session the GUI runs speaker
+	# diarization as a `tomoe diarize-session` subprocess, looked up next to
+	# its own executable (see session.FindDiarizeWorker). Without it there,
+	# a Dock-launched app has no way to find one on PATH, and diarization
+	# is silently skipped.
+	cp $(BINARY) $(APP_BUNDLE)/Contents/MacOS/$(BINARY)
+	sed 's/__VERSION__/$(VERSION)/g' packaging/macos/Info.plist.template > $(APP_BUNDLE)/Contents/Info.plist
+	codesign --sign "$(CODESIGN_IDENTITY)" --force --deep $(APP_BUNDLE)
+	rm -rf "$(APPLICATIONS_DIR)/$(APP_NAME).app"
+	ditto $(APP_BUNDLE) "$(APPLICATIONS_DIR)/$(APP_NAME).app"
+	@echo "Installed $(APPLICATIONS_DIR)/$(APP_NAME).app (version $(VERSION)), signed with '$(CODESIGN_IDENTITY)'."
+	@echo "First install with this identity still needs Screen Recording/Microphone/Accessibility granted once in System Settings > Privacy & Security -- after that, rebuilds should keep working without re-granting."
 
 install-gpu: ## Install CUDA toolkit + sherpa-onnx GPU libraries for NVIDIA acceleration
 	@echo "=== Step 1: Installing CUDA 12 toolkit + cuDNN 9 ==="
@@ -160,7 +222,7 @@ clean: ## Remove build artifacts
 
 ## Model ──────────────────────────────────────────────────────────────
 
-download-model: build ## Download Parakeet TDT INT8 model + Silero VAD + Speaker Embedding
+download-model: build ## Download Parakeet TDT INT8 + Silero VAD + speaker models (+ English streaming Zipformer if two_pass is on)
 	./$(BINARY) model download
 
 ## Help ───────────────────────────────────────────────────────────────

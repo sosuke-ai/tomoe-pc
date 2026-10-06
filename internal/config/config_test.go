@@ -4,7 +4,9 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"testing"
+	"time"
 )
 
 func TestDefaultConfig(t *testing.T) {
@@ -239,6 +241,24 @@ func TestSessionDir(t *testing.T) {
 	}
 }
 
+func TestUnrecognizedUIPendingDir(t *testing.T) {
+	t.Setenv("XDG_DATA_HOME", "/custom/data")
+	got := UnrecognizedUIPendingDir()
+	want := "/custom/data/tomoe/unrecognized-uis-pending"
+	if got != want {
+		t.Errorf("UnrecognizedUIPendingDir() = %q, want %q", got, want)
+	}
+}
+
+func TestUnrecognizedUIApprovedDir(t *testing.T) {
+	t.Setenv("XDG_DATA_HOME", "/custom/data")
+	got := UnrecognizedUIApprovedDir()
+	want := "/custom/data/tomoe/unrecognized-uis-approved"
+	if got != want {
+		t.Errorf("UnrecognizedUIApprovedDir() = %q, want %q", got, want)
+	}
+}
+
 func TestSilenceTimeoutRoundTrip(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "config.toml")
@@ -348,5 +368,152 @@ func TestExistsWhenFilePresent(t *testing.T) {
 
 	if !Exists() {
 		t.Error("Exists() = false after config file is created")
+	}
+}
+
+func TestNewPipelineOptionsDefaultOffForExistingConfigs(t *testing.T) {
+	// A config written before two-pass and the clustering rules existed
+	// keeps main's behavior: every new option defaults to off.
+	path := filepath.Join(t.TempDir(), "config.toml")
+	old := "[transcription]\ngpu_enabled = true\n\n[meeting]\nspeaker_threshold = 0.65\n"
+	if err := os.WriteFile(path, []byte(old), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load() error: %v", err)
+	}
+	if cfg.Transcription.TwoPass {
+		t.Error("Transcription.TwoPass = true, want false (default)")
+	}
+	if cfg.Meeting.StickyThresholdMargin != 0 {
+		t.Errorf("Meeting.StickyThresholdMargin = %v, want 0 (rule off by default)", cfg.Meeting.StickyThresholdMargin)
+	}
+	if cfg.Meeting.MinAssignDuration != 0 {
+		t.Errorf("Meeting.MinAssignDuration = %v, want 0 (rule off by default)", cfg.Meeting.MinAssignDuration)
+	}
+}
+
+func TestNewPipelineOptionsOptIn(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.toml")
+	cfgText := "[transcription]\ntwo_pass = true\n\n[meeting]\nsticky_threshold_margin = 0.15\nmin_assign_duration = 0.7\n"
+	if err := os.WriteFile(path, []byte(cfgText), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load() error: %v", err)
+	}
+	if !cfg.Transcription.TwoPass {
+		t.Error("Transcription.TwoPass = false, want true")
+	}
+	if cfg.Meeting.StickyThresholdMargin != 0.15 || cfg.Meeting.MinAssignDuration != 0.7 {
+		t.Errorf("rules = margin %v, duration %v; want 0.15, 0.7", cfg.Meeting.StickyThresholdMargin, cfg.Meeting.MinAssignDuration)
+	}
+}
+
+func TestWatch_DetectsChangeAndReloads(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.toml")
+
+	cfg := DefaultConfig()
+	cfg.Meeting.SpeakerThreshold = 0.55
+	if err := Save(cfg, path); err != nil {
+		t.Fatalf("Save() error: %v", err)
+	}
+
+	got := make(chan *Config, 1)
+	stop := Watch(path, 20*time.Millisecond, func(c *Config) {
+		got <- c
+	})
+	defer stop()
+
+	// Must not fire for the file's state as of when Watch started.
+	select {
+	case <-got:
+		t.Fatal("onChange fired before any real change was made")
+	case <-time.After(100 * time.Millisecond):
+	}
+
+	// Sleep first so the rewritten file gets a strictly later mtime
+	// even on filesystems with coarse mtime resolution.
+	time.Sleep(20 * time.Millisecond)
+	cfg.Meeting.SpeakerThreshold = 0.60
+	if err := Save(cfg, path); err != nil {
+		t.Fatalf("Save() error: %v", err)
+	}
+
+	select {
+	case newCfg := <-got:
+		if newCfg.Meeting.SpeakerThreshold != 0.60 {
+			t.Errorf("reloaded SpeakerThreshold = %v, want 0.60", newCfg.Meeting.SpeakerThreshold)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("onChange never fired after a real file change")
+	}
+}
+
+func TestWatch_StopStopsFurtherReloads(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.toml")
+	cfg := DefaultConfig()
+	if err := Save(cfg, path); err != nil {
+		t.Fatalf("Save() error: %v", err)
+	}
+
+	var count int32
+	stop := Watch(path, 10*time.Millisecond, func(c *Config) {
+		atomic.AddInt32(&count, 1)
+	})
+	stop()
+
+	time.Sleep(20 * time.Millisecond)
+	cfg.Meeting.SpeakerThreshold = 0.9
+	if err := Save(cfg, path); err != nil {
+		t.Fatalf("Save() error: %v", err)
+	}
+	time.Sleep(100 * time.Millisecond)
+
+	if got := atomic.LoadInt32(&count); got != 0 {
+		t.Errorf("onChange fired %d times after stop(), want 0", got)
+	}
+}
+
+func TestWatch_MissingFileNeverFires(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "does-not-exist.toml")
+
+	var count int32
+	stop := Watch(path, 10*time.Millisecond, func(c *Config) {
+		atomic.AddInt32(&count, 1)
+	})
+	defer stop()
+
+	time.Sleep(100 * time.Millisecond)
+	if got := atomic.LoadInt32(&count); got != 0 {
+		t.Errorf("onChange fired %d times for a nonexistent file, want 0", got)
+	}
+}
+
+func TestMeetingConfig_VideoHintTiming(t *testing.T) {
+	m := MeetingConfig{VideoHintPollInterval: 5, VideoHintTriggerDebounce: 1}
+	interval, debounce := m.VideoHintTiming()
+	if interval != 5*time.Second {
+		t.Errorf("interval = %v, want 5s", interval)
+	}
+	if debounce != 1*time.Second {
+		t.Errorf("debounce = %v, want 1s", debounce)
+	}
+}
+
+func TestMeetingConfig_VideoHintTiming_FallsBackOnZero(t *testing.T) {
+	var m MeetingConfig // zero value
+	interval, debounce := m.VideoHintTiming()
+	def := DefaultConfig().Meeting
+	if want := time.Duration(def.VideoHintPollInterval * float64(time.Second)); interval != want {
+		t.Errorf("interval = %v, want default %v", interval, want)
+	}
+	if want := time.Duration(def.VideoHintTriggerDebounce * float64(time.Second)); debounce != want {
+		t.Errorf("debounce = %v, want default %v", debounce, want)
 	}
 }
