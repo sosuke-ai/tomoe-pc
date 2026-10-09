@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/sosuke-ai/tomoe-pc/internal/audio"
 	"github.com/sosuke-ai/tomoe-pc/internal/session"
@@ -114,9 +115,12 @@ func TestAssignSpeakerMic(t *testing.T) {
 		cfg: Config{},
 	}
 
-	label := c.assignSpeaker(SourceMic, []float32{0.1, 0.2})
+	label, decision := c.assignSpeaker(SourceMic, []float32{0.1, 0.2}, 0)
 	if label != "You" {
 		t.Errorf("mic speaker = %q, want %q", label, "You")
+	}
+	if decision != "" {
+		t.Errorf("mic decision = %q, want empty (mic never goes through audio clustering)", decision)
 	}
 }
 
@@ -126,9 +130,34 @@ func TestAssignSpeakerMonitorNoEmbedder(t *testing.T) {
 	}
 
 	// Without embedder, all monitor segments get "Other"
-	label := c.assignSpeaker(SourceMonitor, []float32{0.1, 0.2})
+	label, _ := c.assignSpeaker(SourceMonitor, []float32{0.1, 0.2}, 0)
 	if label != "Other" {
 		t.Errorf("monitor speaker = %q, want %q", label, "Other")
+	}
+}
+
+func TestAssignSpeakerMonitorSkipDiarization(t *testing.T) {
+	c := &Coordinator{
+		cfg: Config{SkipMonitorDiarization: true},
+	}
+
+	label, decision := c.assignSpeaker(SourceMonitor, []float32{0.1, 0.2}, 0)
+	if label != "System Audio" {
+		t.Errorf("monitor speaker with SkipMonitorDiarization = %q, want %q", label, "System Audio")
+	}
+	if decision != "" {
+		t.Errorf("decision = %q, want empty (diarization skipped)", decision)
+	}
+}
+
+func TestAssignSpeakerMicUnaffectedBySkipDiarization(t *testing.T) {
+	c := &Coordinator{
+		cfg: Config{SkipMonitorDiarization: true},
+	}
+
+	label, _ := c.assignSpeaker(SourceMic, []float32{0.1, 0.2}, 0)
+	if label != "You" {
+		t.Errorf("mic speaker with SkipMonitorDiarization = %q, want %q (mic is unaffected)", label, "You")
 	}
 }
 
@@ -194,9 +223,9 @@ func TestTrackerIntegration(t *testing.T) {
 	emb1 := []float32{1, 0, 0, 0}
 	emb2 := []float32{0, 1, 0, 0}
 
-	label1 := tracker.Assign(emb1)
-	label2 := tracker.Assign(emb2)
-	label3 := tracker.Assign(emb1) // Same as emb1
+	label1, _ := tracker.Assign(emb1, 2*time.Second)
+	label2, _ := tracker.Assign(emb2, 2*time.Second)
+	label3, _ := tracker.Assign(emb1, 2*time.Second) // Same as emb1
 
 	if label1 != "Person 1" {
 		t.Errorf("label1 = %q, want %q", label1, "Person 1")
@@ -466,4 +495,206 @@ func TestStopIdempotent(t *testing.T) {
 	// Calling Stop multiple times should not panic.
 	c.Stop()
 	c.Stop()
+}
+
+// --- Two-pass refinement (pass 2) tests ---
+//
+// refineWorker is pure Go coordination logic (no cgo/ONNX dependency),
+// so it's tested directly here rather than through a full Start()/Stop()
+// cycle, which would need a real VAD model to construct a pipeline at
+// all (see processPipeline's `if vad == nil { return }` guard) — same
+// reason the rest of this file's Start()-based tests never exercise
+// real transcription.
+
+func TestRefineWorker_EmitsUpdateOnSuccess(t *testing.T) {
+	eng := &mockEngine{result: &transcribe.Result{Text: "refined text", Language: "en"}}
+	c := New(Config{Engine: eng})
+
+	c.refineWG.Add(1)
+	go c.refineWorker()
+
+	c.refineCh <- refinementJob{
+		id: "seg-1", samples: []float32{0.1, 0.2}, speaker: "Person 1",
+		startTime: 1.0, endTime: 2.0, source: SourceMonitor, pass1Text: "rough text",
+	}
+	close(c.refineCh)
+
+	update := <-c.segmentUpdateCh
+	if update.ID != "seg-1" {
+		t.Errorf("ID = %q, want %q", update.ID, "seg-1")
+	}
+	if update.Text != "refined text" {
+		t.Errorf("Text = %q, want %q (pass-2 result)", update.Text, "refined text")
+	}
+	if update.Status != "" {
+		t.Errorf("Status = %q, want %q (final)", update.Status, "")
+	}
+	if update.Speaker != "Person 1" || update.Source != string(SourceMonitor) {
+		t.Errorf("Speaker/Source = %q/%q, want %q/%q", update.Speaker, update.Source, "Person 1", SourceMonitor)
+	}
+}
+
+func TestRefineWorker_FallsBackToPass1TextOnEngineError(t *testing.T) {
+	eng := &mockEngine{err: fmt.Errorf("decode failed")}
+	c := New(Config{Engine: eng})
+
+	c.refineWG.Add(1)
+	go c.refineWorker()
+
+	c.refineCh <- refinementJob{
+		id: "seg-2", samples: []float32{0.1}, speaker: "You",
+		startTime: 0, endTime: 1, source: SourceMic, pass1Text: "rough text",
+	}
+	close(c.refineCh)
+
+	update := <-c.segmentUpdateCh
+	if update.Text != "rough text" {
+		t.Errorf("Text = %q, want %q (pass-1 fallback)", update.Text, "rough text")
+	}
+	if update.Status != "" {
+		t.Errorf("Status = %q, want %q (finalized even on refinement failure)", update.Status, "")
+	}
+}
+
+func TestRefineWorker_FallsBackToPass1TextOnEmptyResult(t *testing.T) {
+	eng := &mockEngine{result: &transcribe.Result{Text: "   "}}
+	c := New(Config{Engine: eng})
+
+	c.refineWG.Add(1)
+	go c.refineWorker()
+
+	c.refineCh <- refinementJob{
+		id: "seg-3", samples: []float32{0.1}, speaker: "You",
+		pass1Text: "rough text",
+	}
+	close(c.refineCh)
+
+	update := <-c.segmentUpdateCh
+	if update.Text != "rough text" {
+		t.Errorf("Text = %q, want %q (pass-1 fallback on blank pass-2 result)", update.Text, "rough text")
+	}
+}
+
+func TestSegmentUpdatesChannelAccessor(t *testing.T) {
+	c := New(Config{})
+	if c.SegmentUpdates() == nil {
+		t.Error("SegmentUpdates() = nil, want a channel")
+	}
+}
+
+// --- Live partial (pass 1, mid-utterance) tests ---
+
+func TestEmitLivePartial_BuffersUntilMinAudioReached(t *testing.T) {
+	c := New(Config{})
+	var live liveState
+
+	// Not enough accumulated audio yet -- must not emit anything.
+	live.audio = make([]float32, minLiveAudioSamples-1)
+	c.emitLivePartial(SourceMic, &live, "hello")
+
+	select {
+	case seg := <-c.segmentCh:
+		t.Fatalf("emitLivePartial() emitted %+v before minLiveAudioSamples was reached", seg)
+	default:
+	}
+	if live.id != "" {
+		t.Error("live.id set before minLiveAudioSamples was reached")
+	}
+}
+
+func TestEmitLivePartial_FirstEmissionCreatesLiveSegment(t *testing.T) {
+	c := New(Config{})
+	var live liveState
+	live.audio = make([]float32, minLiveAudioSamples)
+
+	c.emitLivePartial(SourceMic, &live, "hello")
+
+	seg := <-c.segmentCh
+	if seg.Status != "live" {
+		t.Errorf("Status = %q, want %q", seg.Status, "live")
+	}
+	if seg.Text != "hello" {
+		t.Errorf("Text = %q, want %q", seg.Text, "hello")
+	}
+	if seg.Speaker != "You" {
+		t.Errorf("Speaker = %q, want %q (mic source)", seg.Speaker, "You")
+	}
+	if live.id == "" {
+		t.Error("live.id not set after first emission")
+	}
+}
+
+func TestEmitLivePartial_SubsequentCallsUpdateInPlace(t *testing.T) {
+	c := New(Config{})
+	var live liveState
+	live.audio = make([]float32, minLiveAudioSamples)
+
+	c.emitLivePartial(SourceMic, &live, "hello")
+	first := <-c.segmentCh
+
+	c.emitLivePartial(SourceMic, &live, "hello world")
+	update := <-c.segmentUpdateCh
+
+	if update.ID != first.ID {
+		t.Errorf("update ID = %q, want %q (same segment, same utterance)", update.ID, first.ID)
+	}
+	if update.Text != "hello world" {
+		t.Errorf("update Text = %q, want %q", update.Text, "hello world")
+	}
+	if update.Status != "live" {
+		t.Errorf("update Status = %q, want %q", update.Status, "live")
+	}
+	if update.StartTime != first.StartTime {
+		t.Errorf("update StartTime = %v, want unchanged %v", update.StartTime, first.StartTime)
+	}
+}
+
+func TestLiveStateReset(t *testing.T) {
+	live := liveState{partial: "x", id: "seg-1", speaker: "You", startTime: 1, audio: []float32{1, 2}}
+	live.reset()
+	if live.partial != "" || live.id != "" || live.speaker != "" || live.startTime != 0 || live.audio != nil {
+		t.Errorf("reset() left non-zero state: %+v", live)
+	}
+}
+
+func TestSignalHintNeeded_DeliversPriorityFlag(t *testing.T) {
+	c := New(Config{})
+
+	c.signalHintNeeded(true)
+	select {
+	case priority := <-c.HintNeeded():
+		if !priority {
+			t.Error("priority = false, want true")
+		}
+	default:
+		t.Fatal("HintNeeded() had nothing buffered after signalHintNeeded(true)")
+	}
+
+	c.signalHintNeeded(false)
+	select {
+	case priority := <-c.HintNeeded():
+		if priority {
+			t.Error("priority = true, want false")
+		}
+	default:
+		t.Fatal("HintNeeded() had nothing buffered after signalHintNeeded(false)")
+	}
+}
+
+func TestSignalHintNeeded_NonBlockingWhenBufferFull(t *testing.T) {
+	c := New(Config{})
+
+	c.signalHintNeeded(false)
+	// The single-slot buffer is now full; a second signal must be
+	// dropped rather than blocking the caller.
+	done := make(chan struct{})
+	go func() {
+		c.signalHintNeeded(true)
+		close(done)
+	}()
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		t.Fatal("signalHintNeeded() blocked with a full buffer, want a non-blocking drop")
+	}
 }

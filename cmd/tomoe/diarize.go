@@ -40,7 +40,7 @@ func runDiarizeSession(sessID string, forceCPU bool) error {
 		return fmt.Errorf("loading config: %w", err)
 	}
 
-	mgr := models.NewManager(cfg.Transcription.ModelPath)
+	mgr := models.NewManager(cfg.Transcription.ModelPath).WithLiveModel(cfg.Transcription.LiveModel)
 	status := mgr.Check()
 	if !status.DiarizationReady() {
 		return fmt.Errorf("diarization models not available")
@@ -53,14 +53,16 @@ func runDiarizeSession(sessID string, forceCPU bool) error {
 	}
 
 	useGPU := cfg.Transcription.GPUEnabled && !forceCPU
-	fmt.Printf("diarize-session %s: GPU=%v\n", sessID, useGPU)
+	sm, smPath, _ := status.SpeakerModelFor(cfg.Meeting.SpeakerModel, sess.Language)
+	fmt.Printf("diarize-session %s: GPU=%v speaker model=%s\n", sessID, useGPU, sm.ID)
 
 	count, err := session.ReidentifyByDiarization(sess, session.DiarizeConfig{
 		SegmentationModelPath: status.SpeakerSegmentationPath,
-		EmbeddingModelPath:    status.SpeakerEmbeddingPath,
-		Threshold:             1.1,
-		MergeThreshold:        0.55,
+		EmbeddingModelPath:    smPath,
+		Threshold:             float32(sm.DiarizeThreshold),
+		MergeThreshold:        sm.DiarizeMerge,
 		UseGPU:                useGPU,
+		SplitOnSpeakerChange:  cfg.Meeting.SplitOnSpeakerChange,
 	})
 	if err != nil {
 		return fmt.Errorf("diarization: %w", err)

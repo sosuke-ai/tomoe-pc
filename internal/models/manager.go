@@ -9,9 +9,22 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
-
-	"github.com/schollz/progressbar/v3"
 )
+
+// ProgressFunc reports progress for one download step (a human-readable
+// label, e.g. "Parakeet TDT 0.6B v3 INT8"): downloaded/total are bytes
+// for that step's transfer so far (total is 0 if the server didn't send
+// Content-Length). Called from whatever goroutine is doing the
+// download; the CLI drives a terminal progress bar from it, the GUI
+// forwards it to the frontend as an event. May be nil.
+type ProgressFunc func(step string, downloaded, total int64)
+
+// reportProgress calls onProgress if it isn't nil.
+func reportProgress(onProgress ProgressFunc, step string, downloaded, total int64) {
+	if onProgress != nil {
+		onProgress(step, downloaded, total)
+	}
+}
 
 // Status describes the state of downloaded models.
 type Status struct {
@@ -40,16 +53,39 @@ type Status struct {
 	BengaliDecoderPath string
 	BengaliJoinerPath  string
 	BengaliTokensPath  string
+
+	// English streaming Zipformer transducer (realtime "pass 1" — see
+	// internal/live's two-pass pipeline). Not required for Ready(): its
+	// absence just means the live pipeline falls back to VAD+Parakeet
+	// only, same as before this existed.
+	EnglishStreamingReady       bool
+	EnglishStreamingEncoderPath string
+	EnglishStreamingDecoderPath string
+	EnglishStreamingJoinerPath  string
+	EnglishStreamingTokensPath  string
+	// EnglishStreamingModelType and EnglishStreamingName describe the
+	// configured live model (see LiveModels).
+	EnglishStreamingModelType string
+	EnglishStreamingName      string
 }
 
 // Manager handles model download, extraction, and verification.
 type Manager struct {
 	modelDir string
+	live     LiveModel
 }
 
-// NewManager creates a Manager for the given model directory.
+// NewManager creates a Manager for the given model directory, with the
+// default live model (see WithLiveModel).
 func NewManager(modelDir string) *Manager {
-	return &Manager{modelDir: modelDir}
+	return &Manager{modelDir: modelDir, live: ResolveLiveModel("")}
+}
+
+// WithLiveModel makes the manager check and download the live model id
+// (the live_model setting) as its English streaming model.
+func (m *Manager) WithLiveModel(id string) *Manager {
+	m.live = ResolveLiveModel(id)
+	return m
 }
 
 // ModelDir returns the model storage directory.
@@ -62,22 +98,29 @@ func (m *Manager) Check() *Status {
 	parakeetDir := filepath.Join(m.modelDir, ParakeetSubdir)
 	whisperDir := filepath.Join(m.modelDir, WhisperTinySubdir)
 	bengaliDir := filepath.Join(m.modelDir, BengaliSubdir)
+	englishStreamingDir := filepath.Join(m.modelDir, m.live.Subdir)
 
 	s := &Status{
-		ModelDir:                m.modelDir,
-		EncoderPath:             filepath.Join(parakeetDir, encoderFile),
-		DecoderPath:             filepath.Join(parakeetDir, decoderFile),
-		JoinerPath:              filepath.Join(parakeetDir, joinerFile),
-		TokensPath:              filepath.Join(parakeetDir, tokensFile),
-		VADPath:                 filepath.Join(m.modelDir, SileroVADFile),
-		SpeakerEmbeddingPath:    filepath.Join(m.modelDir, SpeakerEmbeddingFile),
-		SpeakerSegmentationPath: filepath.Join(m.modelDir, PyannoteSegmentationSubdir, PyannoteSegmentationFile),
-		LangIDEncoderPath:       filepath.Join(whisperDir, WhisperTinyEncoderFile),
-		LangIDDecoderPath:       filepath.Join(whisperDir, WhisperTinyDecoderFile),
-		BengaliEncoderPath:      filepath.Join(bengaliDir, bengaliEncoderFile),
-		BengaliDecoderPath:      filepath.Join(bengaliDir, bengaliDecoderFile),
-		BengaliJoinerPath:       filepath.Join(bengaliDir, bengaliJoinerFile),
-		BengaliTokensPath:       filepath.Join(bengaliDir, bengaliTokensFile),
+		ModelDir:                    m.modelDir,
+		EncoderPath:                 filepath.Join(parakeetDir, encoderFile),
+		DecoderPath:                 filepath.Join(parakeetDir, decoderFile),
+		JoinerPath:                  filepath.Join(parakeetDir, joinerFile),
+		TokensPath:                  filepath.Join(parakeetDir, tokensFile),
+		VADPath:                     filepath.Join(m.modelDir, SileroVADFile),
+		SpeakerEmbeddingPath:        filepath.Join(m.modelDir, SpeakerEmbeddingFile),
+		SpeakerSegmentationPath:     filepath.Join(m.modelDir, PyannoteSegmentationSubdir, PyannoteSegmentationFile),
+		LangIDEncoderPath:           filepath.Join(whisperDir, WhisperTinyEncoderFile),
+		LangIDDecoderPath:           filepath.Join(whisperDir, WhisperTinyDecoderFile),
+		BengaliEncoderPath:          filepath.Join(bengaliDir, bengaliEncoderFile),
+		BengaliDecoderPath:          filepath.Join(bengaliDir, bengaliDecoderFile),
+		BengaliJoinerPath:           filepath.Join(bengaliDir, bengaliJoinerFile),
+		BengaliTokensPath:           filepath.Join(bengaliDir, bengaliTokensFile),
+		EnglishStreamingEncoderPath: filepath.Join(englishStreamingDir, m.live.Encoder),
+		EnglishStreamingDecoderPath: filepath.Join(englishStreamingDir, m.live.Decoder),
+		EnglishStreamingJoinerPath:  filepath.Join(englishStreamingDir, m.live.Joiner),
+		EnglishStreamingTokensPath:  filepath.Join(englishStreamingDir, m.live.Tokens),
+		EnglishStreamingModelType:   m.live.ModelType,
+		EnglishStreamingName:        m.live.Name,
 	}
 
 	files := []string{s.EncoderPath, s.DecoderPath, s.JoinerPath, s.TokensPath}
@@ -87,6 +130,7 @@ func (m *Manager) Check() *Status {
 	s.SpeakerSegmentationReady = fileExists(s.SpeakerSegmentationPath)
 	s.LangIDReady = allFilesExist(s.LangIDEncoderPath, s.LangIDDecoderPath)
 	s.BengaliReady = allFilesExist(s.BengaliEncoderPath, s.BengaliDecoderPath, s.BengaliJoinerPath, s.BengaliTokensPath)
+	s.EnglishStreamingReady = allFilesExist(s.EnglishStreamingEncoderPath, s.EnglishStreamingDecoderPath, s.EnglishStreamingJoinerPath, s.EnglishStreamingTokensPath)
 
 	// Detect partial download (some files exist but not all)
 	if !s.ParakeetReady {
@@ -154,13 +198,19 @@ func (s *Status) String() string {
 	if s.MultilingualReady() {
 		multilingual = "ready"
 	}
-	return fmt.Sprintf("Model dir: %s\nParakeet TDT INT8: %s\nSilero VAD: %s\nSpeaker Embedding: %s\nSpeaker Segmentation: %s\nDiarization: %s\nLang-ID (Whisper tiny): %s\nBengali Zipformer: %s\nMultilingual: %s",
-		s.ModelDir, parakeet, vad, speaker, segmentation, diarization, langID, bengali, multilingual)
+	englishStreaming := "not downloaded"
+	if s.EnglishStreamingReady {
+		englishStreaming = "ready"
+	}
+	return fmt.Sprintf("Model dir: %s\nParakeet TDT INT8: %s\nSilero VAD: %s\nSpeaker Embedding: %s\nSpeaker Segmentation: %s\nDiarization: %s\nLang-ID (Whisper tiny): %s\nBengali Zipformer: %s\nMultilingual: %s\nEnglish Streaming Zipformer (realtime pass): %s",
+		s.ModelDir, parakeet, vad, speaker, segmentation, diarization, langID, bengali, multilingual, englishStreaming)
 }
 
-// Download downloads and extracts all required models.
-// If force is true, existing models are re-downloaded.
-func (m *Manager) Download(force bool) error {
+// Download downloads and extracts all required models. If force is
+// true, existing models are re-downloaded. onProgress (may be nil) is
+// called for each step actually downloaded; a step already present is
+// skipped without a call.
+func (m *Manager) Download(force bool, onProgress ProgressFunc) error {
 	if err := os.MkdirAll(m.modelDir, 0o755); err != nil {
 		return fmt.Errorf("creating model directory: %w", err)
 	}
@@ -176,7 +226,7 @@ func (m *Manager) Download(force bool) error {
 			_ = os.RemoveAll(parakeetDir)
 		}
 		fmt.Println("Downloading Parakeet TDT 0.6B v3 INT8 model...")
-		if err := m.downloadAndExtractArchive(ParakeetArchiveURL); err != nil {
+		if err := m.downloadAndExtractArchive(ParakeetArchiveURL, "Parakeet TDT 0.6B v3 INT8", onProgress); err != nil {
 			return fmt.Errorf("downloading Parakeet model: %w", err)
 		}
 		fmt.Println("Parakeet TDT model downloaded and extracted.")
@@ -188,7 +238,7 @@ func (m *Manager) Download(force bool) error {
 	if force || !status.VADReady {
 		fmt.Println("Downloading Silero VAD model...")
 		vadPath := filepath.Join(m.modelDir, SileroVADFile)
-		if err := downloadFile(SileroVADURL, vadPath); err != nil {
+		if err := downloadFile(SileroVADURL, vadPath, "Silero VAD", onProgress); err != nil {
 			return fmt.Errorf("downloading Silero VAD: %w", err)
 		}
 		fmt.Println("Silero VAD model downloaded.")
@@ -200,7 +250,7 @@ func (m *Manager) Download(force bool) error {
 	if force || !status.SpeakerEmbeddingReady {
 		fmt.Println("Downloading speaker embedding model...")
 		speakerPath := filepath.Join(m.modelDir, SpeakerEmbeddingFile)
-		if err := downloadFile(SpeakerEmbeddingURL, speakerPath); err != nil {
+		if err := downloadFile(SpeakerEmbeddingURL, speakerPath, "Speaker Embedding", onProgress); err != nil {
 			return fmt.Errorf("downloading speaker embedding model: %w", err)
 		}
 		fmt.Println("Speaker embedding model downloaded.")
@@ -211,7 +261,7 @@ func (m *Manager) Download(force bool) error {
 	// Download Pyannote speaker segmentation model (for diarization)
 	if force || !status.SpeakerSegmentationReady {
 		fmt.Println("Downloading Pyannote speaker segmentation model...")
-		if err := m.downloadAndExtractArchive(PyannoteSegmentationURL); err != nil {
+		if err := m.downloadAndExtractArchive(PyannoteSegmentationURL, "Pyannote Speaker Segmentation", onProgress); err != nil {
 			return fmt.Errorf("downloading Pyannote segmentation model: %w", err)
 		}
 		fmt.Println("Pyannote segmentation model downloaded.")
@@ -228,9 +278,30 @@ func (m *Manager) Download(force bool) error {
 	return nil
 }
 
+// DownloadEnglishStreaming downloads the English streaming Zipformer used
+// by two-pass transcription's realtime pass. It isn't part of Download:
+// two-pass is off by default, so callers fetch it only when it's enabled
+// (see config.TranscriptionConfig.TwoPass). If force is true, it's
+// re-downloaded even if present.
+func (m *Manager) DownloadEnglishStreaming(force bool, onProgress ProgressFunc) error {
+	if !force && m.Check().EnglishStreamingReady {
+		fmt.Printf("Live model %s already present, skipping.\n", m.live.Name)
+		return nil
+	}
+	fmt.Printf("Downloading the live model, %s (realtime transcription pass)...\n", m.live.Name)
+	if err := m.downloadAndExtractArchive(m.live.URL, m.live.Name, onProgress); err != nil {
+		return fmt.Errorf("downloading the live model: %w", err)
+	}
+	if m.live.ID == LiveZipformer {
+		pruneEnglishStreaming(filepath.Join(m.modelDir, EnglishStreamingSubdir))
+	}
+	fmt.Printf("Live model %s downloaded and extracted.\n", m.live.Name)
+	return nil
+}
+
 // DownloadSpeakerModel downloads the speaker embedding model.
 // If force is true, re-downloads even if already present.
-func (m *Manager) DownloadSpeakerModel(force bool) error {
+func (m *Manager) DownloadSpeakerModel(force bool, onProgress ProgressFunc) error {
 	if err := os.MkdirAll(m.modelDir, 0o755); err != nil {
 		return fmt.Errorf("creating model directory: %w", err)
 	}
@@ -243,7 +314,7 @@ func (m *Manager) DownloadSpeakerModel(force bool) error {
 
 	fmt.Println("Downloading speaker embedding model...")
 	speakerPath := filepath.Join(m.modelDir, SpeakerEmbeddingFile)
-	if err := downloadFile(SpeakerEmbeddingURL, speakerPath); err != nil {
+	if err := downloadFile(SpeakerEmbeddingURL, speakerPath, "Speaker Embedding", onProgress); err != nil {
 		return fmt.Errorf("downloading speaker embedding model: %w", err)
 	}
 	fmt.Println("Speaker embedding model downloaded.")
@@ -253,7 +324,7 @@ func (m *Manager) DownloadSpeakerModel(force bool) error {
 // DownloadMultilingual downloads Bengali model for multilingual support.
 // Whisper tiny (lang-id) is no longer downloaded — language selection is manual.
 // If force is true, re-downloads even if already present.
-func (m *Manager) DownloadMultilingual(force bool) error {
+func (m *Manager) DownloadMultilingual(force bool, onProgress ProgressFunc) error {
 	if err := os.MkdirAll(m.modelDir, 0o755); err != nil {
 		return fmt.Errorf("creating model directory: %w", err)
 	}
@@ -263,7 +334,7 @@ func (m *Manager) DownloadMultilingual(force bool) error {
 	// Download Bengali Zipformer transducer
 	if force || !status.BengaliReady {
 		fmt.Println("Downloading Bengali Zipformer model...")
-		if err := m.downloadAndExtractArchive(BengaliArchiveURL); err != nil {
+		if err := m.downloadAndExtractArchive(BengaliArchiveURL, "Bengali Zipformer", onProgress); err != nil {
 			return fmt.Errorf("downloading Bengali model: %w", err)
 		}
 		fmt.Println("Bengali Zipformer model downloaded and extracted.")
@@ -280,8 +351,9 @@ func (m *Manager) DownloadMultilingual(force bool) error {
 	return nil
 }
 
-// downloadAndExtractArchive downloads a tar.bz2 archive and extracts it to the model directory.
-func (m *Manager) downloadAndExtractArchive(url string) error {
+// downloadAndExtractArchive downloads a tar.bz2 archive and extracts it
+// to the model directory, reporting step's progress via onProgress.
+func (m *Manager) downloadAndExtractArchive(url, step string, onProgress ProgressFunc) error {
 	resp, err := http.Get(url)
 	if err != nil {
 		return fmt.Errorf("HTTP GET: %w", err)
@@ -292,10 +364,42 @@ func (m *Manager) downloadAndExtractArchive(url string) error {
 		return fmt.Errorf("HTTP %d: %s", resp.StatusCode, resp.Status)
 	}
 
-	bar := progressbar.DefaultBytes(resp.ContentLength, "downloading")
-	reader := io.TeeReader(resp.Body, bar)
+	total := resp.ContentLength
+	var downloaded int64
+	reader := io.TeeReader(resp.Body, writerFunc(func(p []byte) (int, error) {
+		downloaded += int64(len(p))
+		reportProgress(onProgress, step, downloaded, total)
+		return len(p), nil
+	}))
 
 	return extractTarBz2(reader, m.modelDir)
+}
+
+// writerFunc adapts a func(p []byte) (int, error) to io.Writer, so
+// download progress can be observed via io.TeeReader/io.MultiWriter
+// without a dedicated counting type.
+type writerFunc func(p []byte) (int, error)
+
+func (f writerFunc) Write(p []byte) (int, error) { return f(p) }
+
+// pruneEnglishStreaming deletes the model weights the streaming archive
+// ships but the realtime pass never loads: its fp32 .onnx files alone are
+// ~250MB of the ~320MB extracted. Only .onnx files are touched.
+func pruneEnglishStreaming(dir string) {
+	keep := map[string]bool{
+		englishStreamingEncoderFile: true,
+		englishStreamingDecoderFile: true,
+		englishStreamingJoinerFile:  true,
+	}
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return
+	}
+	for _, e := range entries {
+		if !e.IsDir() && strings.HasSuffix(e.Name(), ".onnx") && !keep[e.Name()] {
+			_ = os.Remove(filepath.Join(dir, e.Name()))
+		}
+	}
 }
 
 // extractTarBz2 extracts a tar.bz2 stream to the destination directory.
@@ -347,8 +451,9 @@ func extractTarBz2(r io.Reader, destDir string) error {
 	return nil
 }
 
-// downloadFile downloads a URL to a local file with a progress bar.
-func downloadFile(url, destPath string) error {
+// downloadFile downloads a URL to a local file, reporting step's
+// progress via onProgress.
+func downloadFile(url, destPath, step string, onProgress ProgressFunc) error {
 	resp, err := http.Get(url)
 	if err != nil {
 		return fmt.Errorf("HTTP GET: %w", err)
@@ -369,8 +474,14 @@ func downloadFile(url, destPath string) error {
 	}
 	defer func() { _ = f.Close() }()
 
-	bar := progressbar.DefaultBytes(resp.ContentLength, "downloading")
-	if _, err := io.Copy(io.MultiWriter(f, bar), resp.Body); err != nil {
+	total := resp.ContentLength
+	var downloaded int64
+	progress := writerFunc(func(p []byte) (int, error) {
+		downloaded += int64(len(p))
+		reportProgress(onProgress, step, downloaded, total)
+		return len(p), nil
+	})
+	if _, err := io.Copy(io.MultiWriter(f, progress), resp.Body); err != nil {
 		return fmt.Errorf("writing file: %w", err)
 	}
 

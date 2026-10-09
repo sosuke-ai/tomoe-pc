@@ -4,9 +4,14 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"runtime"
+	"time"
 
 	"github.com/spf13/cobra"
 
+	"github.com/schollz/progressbar/v3"
+
+	"github.com/sosuke-ai/tomoe-pc/internal/appinit"
 	"github.com/sosuke-ai/tomoe-pc/internal/audio"
 	"github.com/sosuke-ai/tomoe-pc/internal/config"
 	"github.com/sosuke-ai/tomoe-pc/internal/daemon"
@@ -19,6 +24,22 @@ import (
 	"github.com/sosuke-ai/tomoe-pc/internal/speaker"
 	"github.com/sosuke-ai/tomoe-pc/internal/transcribe"
 )
+
+// cliDownloadProgress returns a models.ProgressFunc that drives one
+// terminal progress bar per download step -- a new step name (the
+// previous one having finished) starts a fresh bar, since Content-Length
+// (and so each step's total) is only known once its own request starts.
+func cliDownloadProgress() models.ProgressFunc {
+	var bar *progressbar.ProgressBar
+	var curStep string
+	return func(step string, downloaded, total int64) {
+		if step != curStep {
+			curStep = step
+			bar = progressbar.DefaultBytes(total, step)
+		}
+		_ = bar.Set64(downloaded)
+	}
+}
 
 func main() {
 	// Re-exec with LD_LIBRARY_PATH if GPU libraries are installed.
@@ -58,29 +79,21 @@ var startCmd = &cobra.Command{
 }
 
 func runStart(cmd *cobra.Command, args []string) error {
-	if !config.Exists() {
-		fmt.Println("First run detected, running auto-init...")
-		if err := runInit(cmd, args); err != nil {
-			return err
-		}
-	}
-
 	// Check if already running
 	if daemon.IsRunning() {
 		return fmt.Errorf("daemon already running (PID %d)", daemon.ReadPID())
 	}
 
-	// Load config
-	cfg, err := config.Load(config.Path())
+	// Same init flow tomoe-gui runs on every launch: generates
+	// config.toml on a true first run, and downloads any model that
+	// isn't already present (a no-op check for everything else).
+	result, err := appinit.EnsureInitialized(cliDownloadProgress())
 	if err != nil {
-		return fmt.Errorf("loading config: %w", err)
+		return fmt.Errorf("initializing: %w", err)
 	}
-
-	// Check models
-	mgr := models.NewManager(cfg.Transcription.ModelPath)
-	status := mgr.Check()
+	cfg, status := result.Config, result.ModelStatus
 	if !status.Ready() {
-		return fmt.Errorf("models not downloaded (run 'tomoe init' or 'tomoe model download')")
+		return fmt.Errorf("model download did not complete (run 'tomoe model download' to retry)")
 	}
 
 	// Create transcription engines (multilingual if configured)
@@ -95,6 +108,7 @@ func runStart(cmd *cobra.Command, args []string) error {
 		MaxActivePaths: cfg.Transcription.MaxActivePaths,
 		HotwordsFile:   cfg.Transcription.HotwordsFile,
 		HotwordsScore:  cfg.Transcription.HotwordsScore,
+		Model:          cfg.Transcription.Model,
 	}, status, &cfg.Multilingual)
 	if err != nil {
 		return fmt.Errorf("creating transcription engine: %w", err)
@@ -125,22 +139,71 @@ func runStart(cmd *cobra.Command, args []string) error {
 		fmt.Fprintf(os.Stderr, "Warning: meeting hotkey %q: %v\n", meetingBinding, err)
 	}
 
-	// Create speaker embedder (optional — only if model available)
-	if status.SpeakerEmbeddingReady {
-		if emb, err := speaker.NewEmbedder(status.SpeakerEmbeddingPath); err == nil {
-			opts.Embedder = emb
-			threshold := speaker.DefaultThreshold
-			if cfg.Meeting.SpeakerThreshold > 0 {
-				threshold = cfg.Meeting.SpeakerThreshold
+	// Load the speaker model each meeting language uses (optional — only
+	// if downloaded; see models.ResolveSpeakerModel)
+	embedders := speaker.NewEmbedderSet()
+	for _, lang := range cfg.MeetingLanguages() {
+		if m, path, _ := status.SpeakerModelFor(cfg.Meeting.SpeakerModel, lang); status.SpeakerModelReady(m) {
+			if _, err := embedders.Get(path); err != nil {
+				fmt.Fprintf(os.Stderr, "Warning: speaker model %s: %v\n", m.Name, err)
 			}
-			opts.Tracker = speaker.NewTracker(threshold)
-			defer emb.Close()
 		}
+	}
+	if embedders.Len() > 0 {
+		opts.Embedders = embedders
+		threshold := speaker.DefaultThreshold
+		if cfg.Meeting.SpeakerThreshold > 0 {
+			threshold = cfg.Meeting.SpeakerThreshold
+		}
+		tracker := speaker.NewTracker(threshold)
+		tracker.SetTuning(speaker.TuningFromSeconds(
+			cfg.Meeting.SpeakerThreshold,
+			cfg.Meeting.StickyGraceWindow,
+			cfg.Meeting.StickyThresholdMargin,
+			cfg.Meeting.MinAssignDuration,
+			cfg.Meeting.ShortSegmentGraceWindow,
+		))
+		opts.Tracker = tracker
+		defer embedders.Close()
+
+		// Watch config.toml so clustering tuning can be retuned
+		// live -- no rebuild, no relaunch. See MeetingConfig's doc
+		// comment for why this exists.
+		stopConfigWatch := config.Watch(config.Path(), 2*time.Second, func(newCfg *config.Config) {
+			tracker.SetTuning(speaker.TuningFromSeconds(
+				newCfg.Meeting.SpeakerThreshold,
+				newCfg.Meeting.StickyGraceWindow,
+				newCfg.Meeting.StickyThresholdMargin,
+				newCfg.Meeting.MinAssignDuration,
+				newCfg.Meeting.ShortSegmentGraceWindow,
+			))
+			fmt.Printf("config: reloaded speaker clustering tuning: %+v\n", tracker.Tuning())
+		})
+		defer stopConfigWatch()
 	}
 
 	// Create meeting auto-detector (optional)
 	if cfg.Meeting.AutoDetect {
 		opts.Detector = meeting.NewDetector()
+	}
+
+	// Create the realtime streaming engine (optional — only if the
+	// English streaming model is downloaded; see internal/live's
+	// two-pass pipeline). Sessions fall back to single-pass without it.
+	if status.EnglishStreamingReady && cfg.Transcription.TwoPass {
+		streamingEngine, err := transcribe.NewStreamingEngine(transcribe.StreamingConfig{
+			EncoderPath: status.EnglishStreamingEncoderPath,
+			DecoderPath: status.EnglishStreamingDecoderPath,
+			JoinerPath:  status.EnglishStreamingJoinerPath,
+			TokensPath:  status.EnglishStreamingTokensPath,
+			ModelType:   status.EnglishStreamingModelType,
+		})
+		if err == nil {
+			opts.StreamingEngine = streamingEngine
+			defer streamingEngine.Close()
+		} else {
+			fmt.Fprintf(os.Stderr, "Warning: failed to load English streaming model: %v (live transcription will use single-pass mode)\n", err)
+		}
 	}
 
 	// Run daemon
@@ -174,41 +237,33 @@ func runInit(cmd *cobra.Command, args []string) error {
 	fmt.Println("=== Tomoe Auto-Init ===")
 	fmt.Println()
 
-	// Detect GPU
-	fmt.Println("Detecting GPU...")
-	gpuInfo := gpu.Detect()
-	fmt.Println(gpuInfo)
-	fmt.Println()
+	configExisted := config.Exists()
 
-	// Detect display server
-	displayServer := os.Getenv("XDG_SESSION_TYPE")
-	if displayServer == "" {
-		displayServer = "unknown"
+	// Same init flow tomoe-gui runs on every launch (see appinit):
+	// generates config.toml only if one doesn't exist yet -- re-running
+	// `tomoe init` must not silently reset an already-customized config
+	// back to defaults -- and downloads any model that isn't already
+	// present.
+	result, err := appinit.EnsureInitialized(cliDownloadProgress())
+	if err != nil {
+		return err
 	}
-	fmt.Printf("Display server: %s\n", displayServer)
+
+	fmt.Println("GPU:")
+	fmt.Println(result.GPU)
 	fmt.Println()
 
-	// Generate config
-	cfg := config.DefaultConfig()
-	cfg.Transcription.GPUEnabled = gpuInfo.Available && gpuInfo.Sufficient
-
-	cfgPath := config.Path()
-	if err := config.Save(cfg, cfgPath); err != nil {
-		return fmt.Errorf("saving config: %w", err)
-	}
-	fmt.Printf("Config written to: %s\n", cfgPath)
+	fmt.Printf("Display server: %s\n", displayServerName())
 	fmt.Println()
 
-	// Download models
-	mgr := models.NewManager(cfg.Transcription.ModelPath)
-	if err := mgr.Download(false); err != nil {
-		return fmt.Errorf("downloading models: %w", err)
+	if configExisted {
+		fmt.Printf("Config already present, left unchanged: %s\n", config.Path())
+	} else {
+		fmt.Printf("Config written to: %s\n", config.Path())
 	}
 	fmt.Println()
 
-	// Summary
-	modelStatus := mgr.Check()
-	fmt.Println(modelStatus)
+	fmt.Println(result.ModelStatus)
 	fmt.Println()
 
 	fmt.Println("=== Init complete ===")
@@ -255,7 +310,7 @@ var statusCmd = &cobra.Command{
 		fmt.Println()
 
 		// Models
-		mgr := models.NewManager(config.ModelDir())
+		mgr := models.NewManager(config.ModelDir()).WithLiveModel(liveModelSetting())
 		modelStatus := mgr.Check()
 		fmt.Println(modelStatus)
 		fmt.Println()
@@ -279,11 +334,7 @@ var statusCmd = &cobra.Command{
 		fmt.Println()
 
 		// Display server
-		ds := os.Getenv("XDG_SESSION_TYPE")
-		if ds == "" {
-			ds = "unknown"
-		}
-		fmt.Printf("Display: %s\n", ds)
+		fmt.Printf("Display: %s\n", displayServerName())
 		fmt.Println()
 
 		// Daemon
@@ -313,23 +364,44 @@ var modelDownloadCmd = &cobra.Command{
 	RunE: func(cmd *cobra.Command, args []string) error {
 		force, _ := cmd.Flags().GetBool("force")
 		multilingual, _ := cmd.Flags().GetBool("multilingual")
-		mgr := models.NewManager(config.ModelDir())
+		mgr := models.NewManager(config.ModelDir()).WithLiveModel(liveModelSetting())
 
-		if err := mgr.Download(force); err != nil {
+		if err := mgr.Download(force, cliDownloadProgress()); err != nil {
 			return err
 		}
 
-		// Download multilingual models if enabled in config or explicitly requested
-		if !multilingual && config.Exists() {
-			cfg, err := config.Load(config.Path())
-			if err == nil && cfg.Multilingual.Enabled {
-				multilingual = true
+		// Download multilingual models if enabled in config or explicitly
+		// requested, and the streaming model if two-pass is on or
+		// --streaming asks for it.
+		streaming, _ := cmd.Flags().GetBool("streaming")
+		speakerCfg := config.DefaultConfig()
+		if config.Exists() {
+			if cfg, err := config.Load(config.Path()); err == nil {
+				multilingual = multilingual || cfg.Multilingual.Enabled
+				streaming = streaming || cfg.Transcription.TwoPass
+				speakerCfg = cfg
+			}
+		}
+		if err := mgr.DownloadSpeakerModels(speakerCfg.Meeting.SpeakerModel, speakerCfg.MeetingLanguages(), force, cliDownloadProgress()); err != nil {
+			return err
+		}
+		if err := mgr.DownloadASRModels(speakerCfg.Transcription.Model, speakerCfg.MeetingLanguages(), force, cliDownloadProgress()); err != nil {
+			return err
+		}
+		if speakerCfg.Meeting.VideoHintsOn() {
+			if err := mgr.DownloadOCRModels(force, cliDownloadProgress()); err != nil {
+				return err
+			}
+		}
+		if streaming {
+			if err := mgr.DownloadEnglishStreaming(force, cliDownloadProgress()); err != nil {
+				return err
 			}
 		}
 
 		if multilingual {
 			fmt.Println("\nDownloading multilingual models...")
-			if err := mgr.DownloadMultilingual(force); err != nil {
+			if err := mgr.DownloadMultilingual(force, cliDownloadProgress()); err != nil {
 				return err
 			}
 		}
@@ -341,13 +413,14 @@ var modelDownloadCmd = &cobra.Command{
 func init() {
 	modelDownloadCmd.Flags().Bool("force", false, "Force re-download even if models exist")
 	modelDownloadCmd.Flags().Bool("multilingual", false, "Download language identification and Bengali models (auto-detected from config)")
+	modelDownloadCmd.Flags().Bool("streaming", false, "Download the English streaming model two-pass uses (auto-detected from config)")
 }
 
 var modelStatusCmd = &cobra.Command{
 	Use:   "status",
 	Short: "Show downloaded model info and integrity check",
 	RunE: func(cmd *cobra.Command, args []string) error {
-		mgr := models.NewManager(config.ModelDir())
+		mgr := models.NewManager(config.ModelDir()).WithLiveModel(liveModelSetting())
 		status := mgr.Check()
 		fmt.Println(status)
 		return nil
@@ -382,7 +455,7 @@ var transcribeCmd = &cobra.Command{
 		}
 
 		// Check model status
-		mgr := models.NewManager(cfg.Transcription.ModelPath)
+		mgr := models.NewManager(cfg.Transcription.ModelPath).WithLiveModel(cfg.Transcription.LiveModel)
 		status := mgr.Check()
 		if !status.Ready() {
 			return fmt.Errorf("models not downloaded (run 'tomoe init' or 'tomoe model download')")
@@ -403,6 +476,7 @@ var transcribeCmd = &cobra.Command{
 			MaxActivePaths: cfg.Transcription.MaxActivePaths,
 			HotwordsFile:   cfg.Transcription.HotwordsFile,
 			HotwordsScore:  cfg.Transcription.HotwordsScore,
+			Model:          cfg.Transcription.Model,
 		}, status, &cfg.Multilingual)
 		if err != nil {
 			return fmt.Errorf("creating transcription engine: %w", err)
@@ -413,7 +487,7 @@ var transcribeCmd = &cobra.Command{
 
 		// If diarization models are available, transcribe with speaker labels
 		if status.DiarizationReady() {
-			return transcribeWithSpeakers(engine, filePath, status, useGPU)
+			return transcribeWithSpeakers(engine, filePath, status, cfg.Meeting.SpeakerModel, useGPU)
 		}
 
 		// Fallback: plain transcription without speaker identification
@@ -440,7 +514,7 @@ var transcribeCmd = &cobra.Command{
 }
 
 // transcribeWithSpeakers runs diarization then transcribes each speaker segment.
-func transcribeWithSpeakers(engine transcribe.Engine, filePath string, status *models.Status, useGPU bool) error {
+func transcribeWithSpeakers(engine transcribe.Engine, filePath string, status *models.Status, speakerModel string, useGPU bool) error {
 	// Decode audio to float32 for diarization
 	samples, err := session.DecodeToFloat32(filePath)
 	if err != nil {
@@ -450,12 +524,13 @@ func transcribeWithSpeakers(engine transcribe.Engine, filePath string, status *m
 	duration := float64(len(samples)) / 16000.0
 	fmt.Fprintf(os.Stderr, "Identifying speakers in %.1fs of audio...\n", duration)
 
-	// Run diarization
+	// Run diarization (the default engine is English)
+	sm, smPath, _ := status.SpeakerModelFor(speakerModel, "en")
 	diarSegments, speakerMap, err := session.Diarize(samples, session.DiarizeConfig{
 		SegmentationModelPath: status.SpeakerSegmentationPath,
-		EmbeddingModelPath:    status.SpeakerEmbeddingPath,
-		Threshold:             1.1,
-		MergeThreshold:        0.55,
+		EmbeddingModelPath:    smPath,
+		Threshold:             float32(sm.DiarizeThreshold),
+		MergeThreshold:        sm.DiarizeMerge,
 		UseGPU:                useGPU,
 	})
 	if err != nil {
@@ -555,7 +630,7 @@ var sessionRetranscribeCmd = &cobra.Command{
 	Short: "Re-process a session's audio: re-transcribe and identify speakers",
 	Args:  cobra.ExactArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
-		mgr := models.NewManager(config.ModelDir())
+		mgr := models.NewManager(config.ModelDir()).WithLiveModel(liveModelSetting())
 		status := mgr.Check()
 		if !status.Ready() {
 			return fmt.Errorf("transcription models not downloaded (run 'tomoe model download')")
@@ -584,11 +659,16 @@ var sessionRetranscribeCmd = &cobra.Command{
 
 		// Step 1: Diarize to identify speakers
 		fmt.Printf("Identifying speakers in %q...\n", sess.Title)
+		cfg, err := config.Load(config.Path())
+		if err != nil {
+			cfg = config.DefaultConfig()
+		}
+		sm, smPath, _ := status.SpeakerModelFor(cfg.Meeting.SpeakerModel, sess.Language)
 		count, err := session.ReidentifyByDiarization(sess, session.DiarizeConfig{
 			SegmentationModelPath: status.SpeakerSegmentationPath,
-			EmbeddingModelPath:    status.SpeakerEmbeddingPath,
-			Threshold:             1.1,
-			MergeThreshold:        0.55,
+			EmbeddingModelPath:    smPath,
+			Threshold:             float32(sm.DiarizeThreshold),
+			MergeThreshold:        sm.DiarizeMerge,
 			UseGPU:                useGPU,
 			Verbose:               verbose,
 		})
@@ -645,4 +725,27 @@ var configCmd = &cobra.Command{
 		fmt.Print(string(data))
 		return nil
 	},
+}
+
+// displayServerName is the session type for status output: X11/Wayland
+// from XDG_SESSION_TYPE on Linux, "macOS" on macOS (no such variable
+// there), "unknown" when neither says.
+func displayServerName() string {
+	if ds := os.Getenv("XDG_SESSION_TYPE"); ds != "" {
+		return ds
+	}
+	if runtime.GOOS == "darwin" {
+		return "macOS"
+	}
+	return "unknown"
+}
+
+// liveModelSetting is the configured live model (live_model), for commands
+// that otherwise don't load the config; "" (the default) if it can't be read.
+func liveModelSetting() string {
+	cfg, err := config.Load(config.Path())
+	if err != nil {
+		return ""
+	}
+	return cfg.Transcription.LiveModel
 }

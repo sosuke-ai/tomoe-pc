@@ -1,5 +1,3 @@
-//go:build linux
-
 package meeting
 
 /*
@@ -197,10 +195,10 @@ import (
 
 var (
 	activeDetectorMu sync.Mutex
-	activeDetector   *pulseDetector
+	activeDetector   *Detector
 )
 
-func setActiveDetector(d *pulseDetector) {
+func setActiveDetector(d *Detector) {
 	activeDetectorMu.Lock()
 	activeDetector = d
 	activeDetectorMu.Unlock()

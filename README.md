@@ -27,7 +27,7 @@ make dev-tools
 # Build CLI + GUI
 make build
 
-# First run — auto-detects system, creates config, downloads models (~375MB)
+# First run — auto-detects system, creates config, downloads models (~690MB)
 ./tomoe
 
 # Or launch the GUI
@@ -75,6 +75,8 @@ tomoe model download --multilingual   # Download base + Bengali models
 tomoe model status                    # Show model info + integrity check
 tomoe session list                    # List all saved sessions
 tomoe session re-transcribe <id>      # Re-process a session's audio (re-identify speakers)
+tomoe session replay <id>             # Compare the default pipeline with your config on a session's audio
+tomoe tune <id> --ref <transcript>    # Find the best speaker-naming settings from a session recorded for tuning
 tomoe devices                         # List audio input devices
 tomoe config                          # Print current config
 ```
@@ -107,6 +109,7 @@ decoding_method = 'greedy_search'  # or 'modified_beam_search' for hotwords
 hotwords_file = ''                 # path to hotwords.txt (one word/phrase per line)
 hotwords_score = 1.5               # boost score for hotwords
 max_active_paths = 4               # beam width for modified_beam_search
+two_pass = false                   # English meetings: live streaming text, refined per utterance (experimental)
 
 [multilingual]
 enabled = false
@@ -120,12 +123,57 @@ silence_timeout = 5.0
 
 [meeting]
 default_sources = 'both'
-monitor_device = ''
-speaker_threshold = 0.65
-max_speech_duration = 30.0
-min_silence_duration = 0.5
+monitor_device = ''       # Linux: '' = default monitor source; macOS: '' = 'auto' (the meeting app once it makes sound, else everything), 'everything', or an app; 'none' = mic only
+speaker_threshold = 0.65           # cosine similarity for a confident speaker match
+max_speech_duration = 30.0         # longest utterance (s) before it's cut; each utterance gets one speaker label
+min_silence_duration = 0.5         # pause (s) that ends an utterance
 auto_save = true
-auto_detect = true
+auto_detect = true                 # start recording when an app uses the mic and speaker together (Linux: PulseAudio, macOS: CoreAudio); false = manual only
+sticky_grace_window = 3.0          # seconds a near-miss can still join the last speaker
+sticky_threshold_margin = 0        # how near a near-miss must be; 0 = sticky rule off (experimental)
+min_assign_duration = 0            # segments shorter than this (s) join the last speaker; 0 = off (experimental)
+short_segment_grace_window = 15.0  # seconds after the last speaker that rule applies
+split_on_speaker_change = false    # after a meeting, split lines where the speaker changes mid-line (experimental)
+speaker_model = 'auto'             # voice model: 'auto' (English-trained for English, base otherwise), 'eres2net-en', 'eres2net-base'
+diarize_during_meeting = true      # work out who spoke when while recording; false = the previous pass after the meeting
+diarize_stride = 2                 # with it on: fingerprint every Nth analysis window; sets CPU use during the call (higher = less)
+diarize_recluster = 10             # with it on: seconds between label updates
+video_hint_window = ''             # macOS: window to read speakers from: '' = Teams meeting, 'none' = off, or an app's name (frames kept for a future rule)
+video_hint_learn_interval = 1.0    # macOS: seconds between looks at the meeting window while a speaker needs naming (0.35 = the old rate)
+video_hint_check_interval = 1.0    # macOS: seconds between looks once everyone speaking has a name
+record_for_tuning = false          # record meetings at full detail for `tomoe tune` (more CPU, ~250 MB/hour)
+```
+
+On macOS the app logs to `~/Library/Logs/Tomoe/tomoe-gui.log` (crash traces
+included; kept to about 20 MB).
+
+Settings missing from your `config.toml` take the defaults above. The `[meeting]`
+speaker settings are reloaded while Tomoe runs; no restart needed. Everything can
+also be changed from the GUI's Settings page.
+
+### Trying the experimental pipeline
+
+Two-pass transcription and two speaker-clustering rules (sticky speaker, short
+segments) came out of the macOS port. They're off by default, so the pipeline
+behaves as it always has, until they're proven on real recordings. To try them:
+
+```toml
+[transcription]
+two_pass = true          # also downloads the English streaming model (~310MB)
+
+[meeting]
+speaker_threshold = 0.55
+sticky_threshold_margin = 0.15
+min_assign_duration = 0.7
+split_on_speaker_change = true
+```
+
+To see what they change on your own recordings, replay a saved session. It runs
+the audio through the pipeline once with the defaults and once with your current
+config, then writes both transcripts for diffing:
+
+```bash
+tomoe session replay <session-id>
 ```
 
 ## Architecture
@@ -142,6 +190,7 @@ tomoe-pc/
 │   ├── config/             # TOML config
 │   ├── daemon/             # CLI daemon orchestration
 │   ├── gpu/                # GPU detection
+│   ├── guestaudio/         # [macOS, in progress] ScreenCaptureKit window-audio tap
 │   ├── hotkey/             # Global hotkey (X11 key grabs)
 │   ├── langid/             # Spoken language identification (Whisper tiny, optional)
 │   ├── live/               # Live transcription coordinator + per-source pipelines
@@ -152,6 +201,7 @@ tomoe-pc/
 │   ├── session/            # Session storage, export, audio recording
 │   ├── sigfix/             # ONNX Runtime signal handler fix
 │   ├── speaker/            # Speaker embedding + clustering
+│   ├── teamsvideo/         # [macOS, in progress] Teams window capture + active-speaker ring
 │   └── transcribe/         # sherpa-onnx / Parakeet TDT integration
 ├── frontend/               # React + TypeScript + Vite
 └── Makefile
@@ -192,9 +242,25 @@ Monitor Capturer → StreamCapturer → VAD → Transcribe(lang) → Embed → C
 | `~/.local/share/tomoe/sessions/` | Saved sessions (JSON + M4A) |
 | `~/.local/share/tomoe/lib/` | GPU libraries (if installed) |
 
+## Session Backup
+
+A ready-made rsync/SSH backup script for the sessions directory lives in
+[`scripts/backup/`](./scripts/backup/). Runs on cron or a systemd timer,
+mirrors transcripts and audio to a remote host, and — after verifying each
+remote copy — prunes local audio older than a configurable retention window.
+Transcript `session.json` files are kept locally forever. See
+[`scripts/backup/README.md`](./scripts/backup/README.md) for setup.
+
 ## Roadmap
 
-- **Cross-platform support** — extend beyond Linux to Windows and macOS (audio capture, hotkeys, tray, and meeting detection abstractions)
+- **macOS support (in progress)** — not a straight port: adds a video-based
+  active-speaker signal (Teams' on-screen speaking indicator, OCR'd) that
+  Linux has no equivalent of, used to label `internal/speaker`'s existing
+  clusters with real names instead of "Person N". Window capture and a
+  ScreenCaptureKit audio tap are built and individually validated against a
+  live call; not yet integrated into `cmd/tomoe`. See
+  [`docs/macos-support.md`](docs/macos-support.md).
+- **Windows support** — not started.
 - **Post-meeting delivery hooks** — on meeting completion, push the transcript (and optionally the recording) to an external destination: pipe into a user-defined CLI command, POST to a configurable web endpoint, or both
 
 ## License

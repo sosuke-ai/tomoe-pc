@@ -1,0 +1,113 @@
+package live
+
+import (
+	"sync"
+	"time"
+)
+
+// Timings collects where a Coordinator spends its time, per pipeline stage,
+// for measuring latency and processing load (see `tomoe eval`). Optional:
+// set Config.Timings to collect; nil costs nothing. Safe for concurrent use.
+type Timings struct {
+	mu sync.Mutex
+	// Stage totals.
+	VAD       Stage // voice activity detection, per audio window
+	Streaming Stage // pass-1 streaming decode, per audio window
+	Decode    Stage // Parakeet decode, per utterance
+	Embed     Stage // speaker embedding, per utterance
+	Assign    Stage // speaker clustering, per utterance
+	// Utterances is the processing time of each completed utterance in
+	// seconds, from the end of its speech being detected to its final
+	// text and speaker being ready (decode, embedding and clustering;
+	// not the silence the detector waits for first).
+	Utterances []float64
+}
+
+// Stage is one stage's call count and total time.
+type Stage struct {
+	Calls   int64
+	Seconds float64
+}
+
+func (t *Timings) add(s *Stage, began time.Time) {
+	if t == nil {
+		return
+	}
+	d := time.Since(began).Seconds()
+	t.mu.Lock()
+	s.Calls++
+	s.Seconds += d
+	t.mu.Unlock()
+}
+
+func (t *Timings) utterance(began time.Time) {
+	if t == nil {
+		return
+	}
+	d := time.Since(began).Seconds()
+	t.mu.Lock()
+	t.Utterances = append(t.Utterances, d)
+	t.mu.Unlock()
+}
+
+// timingsOrZero returns the coordinator's Timings for taking a stage's
+// address; when timing is off it returns a throwaway (add ignores a nil
+// receiver, so nothing is recorded).
+func (c *Coordinator) timingsOrZero() *Timings {
+	if c.cfg.Timings != nil {
+		return c.cfg.Timings
+	}
+	return &discardTimings
+}
+
+var discardTimings Timings
+
+// Probes records speaker labels taken from just the start of each
+// utterance (see Config.ProbePrefixes): how early a label could be shown,
+// and how often it would hold.
+type Probes struct {
+	mu sync.Mutex
+	// ByStart maps an utterance's start time (seconds into the session)
+	// to its labels, one per prefix shorter than the utterance.
+	ByStart map[float64][]ProbeLabel
+	// Windows maps an utterance's start time to the speakers of
+	// overlapping windows within it (see Config.WindowSize).
+	Windows map[float64][]WindowLabel
+}
+
+// WindowLabel is the existing speaker a window of an utterance (Start to
+// End, seconds into the session) confidently matches.
+type WindowLabel struct {
+	Start, End float64
+	Speaker    string
+}
+
+func (p *Probes) addWindows(start float64, labels []WindowLabel) {
+	if p == nil || len(labels) == 0 {
+		return
+	}
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if p.Windows == nil {
+		p.Windows = map[float64][]WindowLabel{}
+	}
+	p.Windows[start] = labels
+}
+
+// ProbeLabel is the speaker an utterance's first Prefix seconds match.
+type ProbeLabel struct {
+	Prefix  float64
+	Speaker string
+}
+
+func (p *Probes) add(start float64, labels []ProbeLabel) {
+	if p == nil || len(labels) == 0 {
+		return
+	}
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if p.ByStart == nil {
+		p.ByStart = map[float64][]ProbeLabel{}
+	}
+	p.ByStart[start] = labels
+}

@@ -6,6 +6,7 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"runtime"
 	"sync"
 	"syscall"
 	"time"
@@ -14,14 +15,17 @@ import (
 
 	"github.com/sosuke-ai/tomoe-pc/internal/audio"
 	"github.com/sosuke-ai/tomoe-pc/internal/config"
+	"github.com/sosuke-ai/tomoe-pc/internal/diarize"
 	"github.com/sosuke-ai/tomoe-pc/internal/hotkey"
 	"github.com/sosuke-ai/tomoe-pc/internal/live"
 	"github.com/sosuke-ai/tomoe-pc/internal/meeting"
+	"github.com/sosuke-ai/tomoe-pc/internal/meetingaudio"
 	"github.com/sosuke-ai/tomoe-pc/internal/models"
 	"github.com/sosuke-ai/tomoe-pc/internal/platform"
 	"github.com/sosuke-ai/tomoe-pc/internal/session"
 	"github.com/sosuke-ai/tomoe-pc/internal/speaker"
 	"github.com/sosuke-ai/tomoe-pc/internal/transcribe"
+	"github.com/sosuke-ai/tomoe-pc/internal/videohint"
 )
 
 // Daemon orchestrates the hotkey → capture → transcribe → clipboard pipeline,
@@ -33,11 +37,15 @@ type Daemon struct {
 
 	// Meeting mode dependencies (optional — nil disables meeting mode)
 	meetingHotkey hotkey.Listener
-	embedder      *speaker.Embedder
+	embedders     *speaker.EmbedderSet
 	tracker       *speaker.Tracker
 	store         *session.Store
 	modelStatus   *models.Status
-	detector      meeting.Detector
+	detector      *meeting.Detector
+	// streamingEngine powers live transcription's realtime ("pass 1")
+	// pass; nil if the English streaming model isn't downloaded, in
+	// which case sessions fall back to today's single-pass behavior.
+	streamingEngine transcribe.StreamingEngine
 
 	// Background save pipeline. Each meeting stop enqueues; one worker
 	// drains the queue serially so concurrent diarization can't corrupt
@@ -52,12 +60,13 @@ const saveQueueDepth = 16
 
 // MeetingOpts holds optional dependencies for meeting recording mode.
 type MeetingOpts struct {
-	MeetingHotkey hotkey.Listener
-	Embedder      *speaker.Embedder
-	Tracker       *speaker.Tracker
-	Store         *session.Store
-	ModelStatus   *models.Status
-	Detector      meeting.Detector
+	MeetingHotkey   hotkey.Listener
+	Embedders       *speaker.EmbedderSet // speaker models by file; nil if none
+	Tracker         *speaker.Tracker
+	Store           *session.Store
+	ModelStatus     *models.Status
+	Detector        *meeting.Detector
+	StreamingEngine transcribe.StreamingEngine
 }
 
 // New creates a Daemon with the given dependencies.
@@ -69,11 +78,12 @@ func New(cfg *config.Config, engines *transcribe.EngineSet, svc *platform.Servic
 	}
 	if opts != nil {
 		d.meetingHotkey = opts.MeetingHotkey
-		d.embedder = opts.Embedder
+		d.embedders = opts.Embedders
 		d.tracker = opts.Tracker
 		d.store = opts.Store
 		d.modelStatus = opts.ModelStatus
 		d.detector = opts.Detector
+		d.streamingEngine = opts.StreamingEngine
 	}
 	return d
 }
@@ -105,166 +115,174 @@ func (d *Daemon) Run(ctx context.Context) error {
 			defaultLang = d.cfg.Multilingual.DefaultLang
 		}
 	}
-	d.tray = startDaemonTray(languages, defaultLang)
-	defer d.tray.Close()
+	// runWithTray owns the system tray for the process lifetime. On Linux
+	// this just starts systray in a goroutine and calls body immediately
+	// (unchanged from before); on darwin, Cocoa requires systray's native
+	// loop to run on the actual OS main thread, so runWithTray calls
+	// systray.Run itself (blocking) and runs body in a goroutine from
+	// inside onReady instead. See run_linux.go / run_darwin.go.
+	return runWithTray(languages, defaultLang, func(tray *daemonTray) error {
+		d.tray = tray
+		defer d.tray.Close()
 
-	// Register dictation hotkey
-	if err := d.svc.Hotkey.Register(); err != nil {
-		return fmt.Errorf("registering dictation hotkey: %w", err)
-	}
-
-	// Register meeting hotkey (optional)
-	var meetingCh <-chan struct{}
-	if d.meetingHotkey != nil {
-		if err := d.meetingHotkey.Register(); err != nil {
-			fmt.Fprintf(os.Stderr, "Warning: could not register meeting hotkey: %v\n", err)
-		} else {
-			meetingCh = d.meetingHotkey.Keydown()
+		// Register dictation hotkey
+		if err := d.svc.Hotkey.Register(); err != nil {
+			return fmt.Errorf("registering dictation hotkey: %w", err)
 		}
-	}
 
-	// Start meeting auto-detector (optional)
-	var detectCh <-chan meeting.MeetingEvent
-	if d.detector != nil {
-		if err := d.detector.Start(ctx); err != nil {
-			fmt.Fprintf(os.Stderr, "Warning: meeting auto-detect unavailable: %v\n", err)
-		} else {
-			detectCh = d.detector.Events()
-			defer d.detector.Stop()
-		}
-	}
-
-	// Signal handling
-	sigCh := make(chan os.Signal, 1)
-	signal.Notify(sigCh, syscall.SIGTERM, syscall.SIGINT)
-	defer signal.Stop(sigCh)
-
-	bindings := d.cfg.Hotkey.Binding + " for dictation"
-	if meetingCh != nil {
-		meetingBinding := d.cfg.Hotkey.MeetingBinding
-		if meetingBinding == "" {
-			meetingBinding = "Super+Shift+X"
-		}
-		bindings += ", " + meetingBinding + " for meeting"
-	}
-	_ = d.svc.Notifier.Send("Tomoe", fmt.Sprintf("Ready — %s", bindings))
-	fmt.Printf("Tomoe daemon started. Hotkeys: %s\n", bindings)
-
-	// State
-	var dictState *streamingDictation
-	var meetState *meetingState
-
-	// Auto-stop channel — signalled by streaming dictation on silence timeout
-	autoStopCh := make(chan struct{}, 1)
-
-	// toggleDictation handles start/stop dictation from any trigger (hotkey or tray).
-	toggleDictation := func(lang string) {
-		if meetState != nil {
-			return // ignore dictation while meeting active
-		}
-		if dictState == nil {
-			ds, err := d.startStreamingDictation(ctx, autoStopCh, lang)
-			if err != nil {
-				_ = d.svc.Notifier.Send("Tomoe", fmt.Sprintf("Dictation failed: %v", err))
-				fmt.Printf("Error starting dictation: %v\n", err)
-				return
+		// Register meeting hotkey (optional)
+		var meetingCh <-chan struct{}
+		if d.meetingHotkey != nil {
+			if err := d.meetingHotkey.Register(); err != nil {
+				fmt.Fprintf(os.Stderr, "Warning: could not register meeting hotkey: %v\n", err)
+			} else {
+				meetingCh = d.meetingHotkey.Keydown()
 			}
-			dictState = ds
-			d.tray.SetDictating()
-			_ = d.svc.Notifier.Send("Tomoe", fmt.Sprintf("Dictating (%s)...", lang))
-			fmt.Printf("Streaming dictation started (%s)...\n", lang)
-		} else {
-			d.stopDictation(dictState)
-			dictState = nil
 		}
-	}
 
-	// toggleMeeting handles start/stop meeting from any trigger (hotkey or tray).
-	toggleMeeting := func(lang string) {
-		if dictState != nil {
-			return // ignore meeting while dictating
-		}
-		if meetState == nil {
-			ms, err := d.startMeetingWithPlatform(ctx, "", lang)
-			if err != nil {
-				_ = d.svc.Notifier.Send("Tomoe", fmt.Sprintf("Meeting start failed: %v", err))
-				fmt.Printf("Error starting meeting: %v\n", err)
-				return
+		// Start meeting auto-detector (optional)
+		var detectCh <-chan meeting.MeetingEvent
+		if d.detector != nil {
+			if err := d.detector.Start(ctx); err != nil {
+				fmt.Fprintf(os.Stderr, "Warning: meeting auto-detect unavailable: %v\n", err)
+			} else {
+				detectCh = d.detector.Events()
+				defer d.detector.Stop()
 			}
-			meetState = ms
-			d.tray.SetMeetingRecording()
-			_ = d.svc.Notifier.Send("Tomoe", fmt.Sprintf("Meeting recording started (%s)", lang))
-			fmt.Printf("Meeting recording started (%s)...\n", lang)
-		} else {
-			d.stopMeeting(meetState)
-			meetState = nil
 		}
-	}
 
-	for {
-		select {
-		case <-ctx.Done():
-			fmt.Println("Shutting down...")
-			d.cleanupAll(dictState, meetState)
-			return nil
+		// Signal handling
+		sigCh := make(chan os.Signal, 1)
+		signal.Notify(sigCh, syscall.SIGTERM, syscall.SIGINT)
+		defer signal.Stop(sigCh)
 
-		case sig := <-sigCh:
-			fmt.Printf("Received %s, shutting down...\n", sig)
-			d.cleanupAll(dictState, meetState)
-			return nil
+		bindings := d.cfg.Hotkey.Binding + " for dictation"
+		if meetingCh != nil {
+			meetingBinding := d.cfg.Hotkey.MeetingBinding
+			if meetingBinding == "" {
+				meetingBinding = "Super+Shift+X"
+			}
+			bindings += ", " + meetingBinding + " for meeting"
+		}
+		_ = d.svc.Notifier.Send("Tomoe", fmt.Sprintf("Ready — %s", bindings))
+		fmt.Printf("Tomoe daemon started. Hotkeys: %s\n", bindings)
 
-		case <-d.tray.quitCh:
-			fmt.Println("Quit from tray, shutting down...")
-			d.cleanupAll(dictState, meetState)
-			return nil
+		// State
+		var dictState *streamingDictation
+		var meetState *meetingState
 
-		case <-d.svc.Hotkey.Keydown():
-			toggleDictation(defaultLang)
+		// Auto-stop channel — signalled by streaming dictation on silence timeout
+		autoStopCh := make(chan struct{}, 1)
 
-		case lang := <-d.tray.dictationCh:
-			toggleDictation(lang)
-
-		case <-autoStopCh:
-			if dictState != nil {
-				timeout := d.silenceTimeout()
-				fmt.Printf("Auto-stopping dictation after %.0fs of silence\n", timeout.Seconds())
-				_ = d.svc.Notifier.Send("Tomoe", "Dictation auto-stopped (silence)")
+		// toggleDictation handles start/stop dictation from any trigger (hotkey or tray).
+		toggleDictation := func(lang string) {
+			if meetState != nil {
+				return // ignore dictation while meeting active
+			}
+			if dictState == nil {
+				ds, err := d.startStreamingDictation(ctx, autoStopCh, lang)
+				if err != nil {
+					_ = d.svc.Notifier.Send("Tomoe", fmt.Sprintf("Dictation failed: %v", err))
+					fmt.Printf("Error starting dictation: %v\n", err)
+					return
+				}
+				dictState = ds
+				d.tray.SetDictating()
+				_ = d.svc.Notifier.Send("Tomoe", fmt.Sprintf("Dictating (%s)...", lang))
+				fmt.Printf("Streaming dictation started (%s)...\n", lang)
+			} else {
 				d.stopDictation(dictState)
 				dictState = nil
 			}
+		}
 
-		case <-meetingCh:
-			toggleMeeting(defaultLang)
-
-		case lang := <-d.tray.meetingCh:
-			toggleMeeting(lang)
-
-		case evt := <-detectCh:
-			switch evt.Type {
-			case meeting.MeetingStarted:
-				if dictState != nil || meetState != nil {
-					break // ignore if already recording
-				}
-				platform := string(evt.Platform)
-				ms, err := d.startMeetingWithPlatform(ctx, platform, defaultLang)
+		// toggleMeeting handles start/stop meeting from any trigger (hotkey or tray).
+		toggleMeeting := func(lang string) {
+			if dictState != nil {
+				return // ignore meeting while dictating
+			}
+			if meetState == nil {
+				ms, err := d.startMeetingWithPlatform(ctx, "", lang)
 				if err != nil {
-					_ = d.svc.Notifier.Send("Tomoe", fmt.Sprintf("Auto-detect meeting start failed: %v", err))
-					fmt.Printf("Error auto-starting meeting: %v\n", err)
-					break
+					_ = d.svc.Notifier.Send("Tomoe", fmt.Sprintf("Meeting start failed: %v", err))
+					fmt.Printf("Error starting meeting: %v\n", err)
+					return
 				}
 				meetState = ms
 				d.tray.SetMeetingRecording()
-				msg := fmt.Sprintf("%s meeting detected — recording started", platform)
-				_ = d.svc.Notifier.Send("Tomoe", msg)
-				fmt.Println(msg)
-			case meeting.MeetingStopped:
-				if meetState != nil {
-					d.stopMeeting(meetState)
-					meetState = nil
+				_ = d.svc.Notifier.Send("Tomoe", fmt.Sprintf("Meeting recording started (%s)", lang))
+				fmt.Printf("Meeting recording started (%s)...\n", lang)
+			} else {
+				d.stopMeeting(meetState)
+				meetState = nil
+			}
+		}
+
+		for {
+			select {
+			case <-ctx.Done():
+				fmt.Println("Shutting down...")
+				d.cleanupAll(dictState, meetState)
+				return nil
+
+			case sig := <-sigCh:
+				fmt.Printf("Received %s, shutting down...\n", sig)
+				d.cleanupAll(dictState, meetState)
+				return nil
+
+			case <-d.tray.quitCh:
+				fmt.Println("Quit from tray, shutting down...")
+				d.cleanupAll(dictState, meetState)
+				return nil
+
+			case <-d.svc.Hotkey.Keydown():
+				toggleDictation(defaultLang)
+
+			case lang := <-d.tray.dictationCh:
+				toggleDictation(lang)
+
+			case <-autoStopCh:
+				if dictState != nil {
+					timeout := d.silenceTimeout()
+					fmt.Printf("Auto-stopping dictation after %.0fs of silence\n", timeout.Seconds())
+					_ = d.svc.Notifier.Send("Tomoe", "Dictation auto-stopped (silence)")
+					d.stopDictation(dictState)
+					dictState = nil
+				}
+
+			case <-meetingCh:
+				toggleMeeting(defaultLang)
+
+			case lang := <-d.tray.meetingCh:
+				toggleMeeting(lang)
+
+			case evt := <-detectCh:
+				switch evt.Type {
+				case meeting.MeetingStarted:
+					if dictState != nil || meetState != nil {
+						break // ignore if already recording
+					}
+					platform := string(evt.Platform)
+					ms, err := d.startMeetingWithPlatform(ctx, platform, defaultLang)
+					if err != nil {
+						_ = d.svc.Notifier.Send("Tomoe", fmt.Sprintf("Auto-detect meeting start failed: %v", err))
+						fmt.Printf("Error auto-starting meeting: %v\n", err)
+						break
+					}
+					meetState = ms
+					d.tray.SetMeetingRecording()
+					msg := fmt.Sprintf("%s meeting detected — recording started", platform)
+					_ = d.svc.Notifier.Send("Tomoe", msg)
+					fmt.Println(msg)
+				case meeting.MeetingStopped:
+					if meetState != nil {
+						d.stopMeeting(meetState)
+						meetState = nil
+					}
 				}
 			}
 		}
-	}
+	})
 }
 
 func (d *Daemon) cleanupAll(dict *streamingDictation, meet *meetingState) {
@@ -358,9 +376,11 @@ func (d *Daemon) stopDictation(ds *streamingDictation) {
 // --- Meeting Recording ---
 
 type meetingState struct {
-	coordinator *live.Coordinator
-	session     *session.Session
-	done        chan struct{}
+	coordinator     *live.Coordinator
+	session         *session.Session
+	diar            *diarize.SessionDiarizer // nil unless diarizing during the meeting
+	done            chan struct{}
+	videoHintCancel context.CancelFunc
 }
 
 func (d *Daemon) startMeetingWithPlatform(ctx context.Context, platform string, lang string) (*meetingState, error) {
@@ -370,11 +390,20 @@ func (d *Daemon) startMeetingWithPlatform(ctx context.Context, platform string, 
 	}
 
 	cfg := live.Config{
-		Engine:            d.engines.Get(lang),
-		Embedder:          d.embedder,
-		Tracker:           d.tracker,
-		VADPath:           vadPath,
-		SegmentBufferSize: 64,
+		Engine:             d.engines.Get(lang),
+		Embedder:           d.meetingEmbedder(lang),
+		MinSilenceDuration: d.cfg.Meeting.MinSilenceDuration,
+		MaxSpeechDuration:  d.cfg.Meeting.MaxSpeechDuration,
+		MinSpeechLevelDB:   d.cfg.Meeting.MinSpeechLevelDB,
+		MicLevelMarginDB:   d.cfg.Meeting.MicLevelMarginDB,
+		Tracker:            d.tracker,
+		VADPath:            vadPath,
+		SegmentBufferSize:  64,
+	}
+	// Realtime pass is English-only (see internal/transcribe's
+	// StreamingEngine); other languages keep today's single-pass path.
+	if lang == "en" {
+		cfg.StreamingEngine = d.streamingEngine
 	}
 
 	// Set up mic capturer
@@ -388,18 +417,31 @@ func (d *Daemon) startMeetingWithPlatform(ctx context.Context, platform string, 
 	}
 	cfg.MicCapturer = audio.NewStreamCapturer(micCapturer, audio.DefaultWindowSize, 128)
 
-	// Set up monitor capturer (optional)
-	monitorDevice := d.cfg.Meeting.MonitorDevice
-	if monitorDevice == "" {
-		monitorDevice = audio.DefaultMonitorDevice()
-	}
-	if monitorDevice != "" {
-		monCapturer, err := audio.NewCapturer(monitorDevice, audio.Monitor)
-		if err != nil {
-			cfg.MicCapturer.Close()
-			return nil, fmt.Errorf("creating monitor capturer: %w", err)
+	// Set up monitor capturer (optional) — the second audio source: a
+	// PulseAudio monitor device on Linux (config.toml's monitor_device,
+	// falling back to the system default if empty), or on macOS a
+	// specific app's PID or "everything" (see internal/meetingaudio) --
+	// the CLI daemon has no interactive picker, so this is
+	// config.toml-driven; leaving monitor_device empty means "no
+	// monitor" on macOS specifically (a PID wouldn't survive an app
+	// restart anyway), unlike Linux's "use the default device" meaning
+	// for the same empty value.
+	var monCapturer *audio.StreamCapturer
+	var audioAuto *meetingaudio.Auto
+	if src := d.cfg.Meeting.MonitorDevice; src == meetingaudio.AutoSource || (src == "" && runtime.GOOS == "darwin") {
+		monCapturer, audioAuto, err = meetingaudio.NewAutoMonitorSource()
+		if audioAuto != nil {
+			fmt.Printf("system audio: capturing %s\n", audioAuto.Current())
 		}
-		cfg.MonitorCapturer = audio.NewStreamCapturer(monCapturer, audio.DefaultWindowSize, 128)
+	} else {
+		monCapturer, err = meetingaudio.NewMonitorSource(src)
+	}
+	if err != nil {
+		cfg.MicCapturer.Close()
+		return nil, fmt.Errorf("creating monitor capturer: %w", err)
+	}
+	if monCapturer != nil {
+		cfg.MonitorCapturer = monCapturer
 	}
 
 	// Reset speaker tracker
@@ -407,8 +449,100 @@ func (d *Daemon) startMeetingWithPlatform(ctx context.Context, platform string, 
 		d.tracker.Reset()
 	}
 
-	coordinator := live.New(cfg)
+	st := models.NewManager(d.cfg.Transcription.ModelPath).WithLiveModel(d.cfg.Transcription.LiveModel).Check()
+	videohint.SetOCRModels(st.OCRModelPath(models.OCRDetector), st.OCRModelPath(models.OCRRecognizer))
+
+	// Screen-based speaker-name hints (macOS only; a no-op on Linux):
+	// the watcher looks at the meeting window, more often while a speaker
+	// needs naming and right after a speaker change. Its looks go to sess,
+	// coordinator and diar, set below before it runs.
+	var (
+		sess        *session.Session
+		coordinator *live.Coordinator
+		diar        *diarize.SessionDiarizer
+		lookLog     *videohint.LookLog
+		lastLook    videohint.Look
+	)
+	learn, check := d.cfg.Meeting.VideoHintTiming()
+	// Speaker-change signals end a turn (live.Config.TurnMode).
+	changes := &live.ChangeLog{}
+	cfg.TurnMode, cfg.TurnMaxSeconds, cfg.TurnMaxGap = d.cfg.Meeting.TurnMode, d.cfg.Meeting.TurnMaxSeconds, d.cfg.Meeting.TurnMaxGap
+	cfg.DecodePad, cfg.TurnInterjection = d.cfg.Meeting.DecodePad, d.cfg.Meeting.TurnInterjection
+	cfg.SpeakerChanged = changes.Between
+	if d.cfg.Meeting.SplitAtHighlight {
+		cfg.HighlightChanges, cfg.HighlightLag = changes.NameChangesIn, live.DefaultHighlightLag
+	}
+
+	watcher := videohint.NewWatcher(videohint.WatchConfig{
+		Source:        d.cfg.Meeting.VideoHintWindow,
+		LearnInterval: learn,
+		CheckInterval: check,
+		NeedsLearning: func() bool {
+			if d.cfg.Meeting.RecordForTuning {
+				return true
+			}
+			if diar != nil {
+				return diar.NeedsNames()
+			}
+			return d.tracker == nil || d.tracker.HasUnnamedSpeakers()
+		},
+		OnLook: func(l videohint.Look) {
+			_ = lookLog.Write(l)
+			if l.Stage != lastLook.Stage || l.Name != lastLook.Name {
+				fmt.Printf("[videohint] %s: %s\n", l.Stage, l.Detail)
+			}
+			lastLook = l
+			if diar != nil && len(l.Candidates) > 1 {
+				diar.AddCandidates(coordinator.SessionTime(l.Time), l.Candidates)
+			}
+			if !l.Usable || l.Name == "" {
+				return
+			}
+			changes.NameSeen(coordinator.SessionTime(l.Time), l.Name)
+			if diar != nil {
+				diar.AddHint(coordinator.SessionTime(l.Time), l.Name)
+			} else if d.tracker != nil {
+				d.tracker.SetHintForRecent(l.Name, videohint.HintAttachMaxAge)
+			}
+		},
+	})
+	cfg.OnMonitorSpeechStart = watcher.Burst
+	if d.cfg.Meeting.RecordForTuning {
+		watcher.SetOnFullFrame(func(id int, jpeg []byte) { _ = lookLog.WriteFull(id, jpeg) })
+		watcher.SetOnWindowShot(func(lookID, windowID int, thumb bool, jpeg []byte) {
+			_ = lookLog.WriteWindowShot(lookID, windowID, thumb, jpeg)
+		})
+	}
+
+	// Diarize during the meeting if that's on (see
+	// diarize.SessionDiarizer); mu guards the session from here on.
+	var mu sync.Mutex
+	if cfg.MonitorCapturer != nil && !cfg.SkipMonitorDiarization && d.modelStatus != nil {
+		diar, err = diarize.NewSessionDiarizer(d.cfg.Meeting, d.modelStatus, lang, &mu, diarize.SessionOptions{
+			OnChanged: func(changed []session.Segment) {
+				for _, seg := range changed {
+					fmt.Printf("[%s] relabeled: %s\n", formatTimestamp(seg.StartTime), seg.Speaker)
+				}
+			},
+			OnSpeakerChange: func(at float64) {
+				watcher.Burst()
+				changes.Add(at)
+			},
+		})
+		if err != nil {
+			fmt.Printf("diarize during meeting: %v; diarizing after the meeting instead\n", err)
+			diar = nil
+		} else if diar != nil {
+			cfg.MonitorAudio = diar.Feed
+			fmt.Printf("diarizing during the meeting (%s)\n", diar.Describe())
+		}
+	}
+
+	coordinator = live.New(cfg)
 	if err := coordinator.Start(ctx); err != nil {
+		if diar != nil {
+			diar.Abort()
+		}
 		cfg.MicCapturer.Close()
 		if cfg.MonitorCapturer != nil {
 			cfg.MonitorCapturer.Close()
@@ -422,7 +556,7 @@ func (d *Daemon) startMeetingWithPlatform(ctx context.Context, platform string, 
 	// Create session
 	var sources []string
 	sources = append(sources, "mic")
-	if monitorDevice != "" {
+	if cfg.MonitorCapturer != nil {
 		sources = append(sources, "monitor")
 	}
 
@@ -431,7 +565,7 @@ func (d *Daemon) startMeetingWithPlatform(ctx context.Context, platform string, 
 		title = fmt.Sprintf("%s Meeting %s", platform, time.Now().Format("2006-01-02 15:04"))
 	}
 
-	sess := &session.Session{
+	sess = &session.Session{
 		ID:        uuid.New().String(),
 		Title:     title,
 		Platform:  platform,
@@ -439,14 +573,27 @@ func (d *Daemon) startMeetingWithPlatform(ctx context.Context, platform string, 
 		Sources:   sources,
 	}
 
-	// Drain segments in a goroutine
+	// Drain segments (and, for two-pass sessions, their refinements) in
+	// their own goroutines, closing done only once both have finished —
+	// same reasoning as internal/live's own closer goroutine: a
+	// refinement queued right at shutdown should still get applied
+	// before this daemon considers the meeting fully stopped.
+	mu.Lock()
+	if diar != nil {
+		diar.SetSessionLocked(sess)
+	}
+	mu.Unlock()
 	done := make(chan struct{})
-	var mu sync.Mutex
+	var drainWG sync.WaitGroup
+	drainWG.Add(2)
 	go func() {
-		defer close(done)
+		defer drainWG.Done()
 		for seg := range coordinator.Segments() {
 			mu.Lock()
-			sess.Segments = append(sess.Segments, seg)
+			if diar != nil {
+				diar.LabelNewLocked(&seg)
+			}
+			sess.UpsertSegment(seg)
 			mu.Unlock()
 			if seg.Language != "" {
 				fmt.Printf("[%s] [%s] %s: %s\n", formatTimestamp(seg.StartTime), seg.Language, seg.Speaker, seg.Text)
@@ -455,15 +602,72 @@ func (d *Daemon) startMeetingWithPlatform(ctx context.Context, platform string, 
 			}
 		}
 	}()
+	go func() {
+		defer drainWG.Done()
+		for seg := range coordinator.SegmentUpdates() {
+			// Upsert rather than update in place: a revision can overtake
+			// its segment, which travels on the other channel.
+			mu.Lock()
+			if diar != nil {
+				diar.LabelNewLocked(&seg)
+			}
+			sess.UpsertSegment(seg)
+			mu.Unlock()
+			fmt.Printf("[%s] %s: %s (refined)\n", formatTimestamp(seg.StartTime), seg.Speaker, seg.Text)
+		}
+	}()
+	go func() {
+		drainWG.Wait()
+		close(done)
+	}()
+
+	// Screen-based speaker-label hints (macOS only; no-op on Linux —
+	// see internal/videohint). Its own context, not the daemon-lifetime
+	// ctx passed in above, since it must stop when this meeting does,
+	// not when the daemon exits — same reasoning as streamingDictation's
+	// cancel field elsewhere in this file.
+	videoHintCtx, videoHintCancel := context.WithCancel(ctx)
+	lookLog = videohint.NewLookLog(filepath.Join(config.SessionDir(), sess.ID))
+	go watcher.Run(videoHintCtx)
+	if audioAuto != nil {
+		go func() {
+			t := time.NewTicker(3 * time.Second)
+			defer t.Stop()
+			for {
+				select {
+				case <-videoHintCtx.Done():
+					return
+				case <-t.C:
+					if name, ok := audioAuto.TryMeetingApp(); ok {
+						fmt.Printf("system audio: now capturing %s only\n", name)
+						return
+					}
+				}
+			}
+		}()
+	}
+	go func() {
+		for {
+			select {
+			case <-videoHintCtx.Done():
+				return
+			case <-coordinator.HintNeeded():
+				watcher.Burst()
+			}
+		}
+	}()
 
 	return &meetingState{
-		coordinator: coordinator,
-		session:     sess,
-		done:        done,
+		coordinator:     coordinator,
+		session:         sess,
+		diar:            diar,
+		done:            done,
+		videoHintCancel: videoHintCancel,
 	}, nil
 }
 
 func (d *Daemon) stopMeeting(ms *meetingState) {
+	ms.videoHintCancel()
 	ms.coordinator.Stop()
 	<-ms.done
 
@@ -535,6 +739,22 @@ func (d *Daemon) saveMeetingAsync(ms *meetingState) {
 		fmt.Printf("Error saving session: %v\n", err)
 	}
 
+	// Diarized during the meeting: its final labels replace the
+	// post-meeting pass (which still runs if that failed).
+	if ms.diar != nil {
+		err := ms.diar.Finish(filepath.Join(config.SessionDir(), ms.session.ID))
+		if err == nil {
+			if err := d.store.Save(ms.session); err != nil {
+				fmt.Printf("Error saving session: %v\n", err)
+			}
+			msg := fmt.Sprintf("Meeting saved — %s", ms.session.Title)
+			_ = d.svc.Notifier.Send("Tomoe", msg)
+			fmt.Println(msg)
+			return
+		}
+		fmt.Printf("diarizing during the meeting failed: %v\n", err)
+	}
+
 	// Refinement: neural diarization in an isolated subprocess so a
 	// sherpa-onnx Process() crash never reaches the daemon. The subprocess
 	// retries GPU → GPU → CPU; on success it overwrites the session.json
@@ -557,4 +777,22 @@ func formatTimestamp(seconds float64) string {
 	m := int(d.Minutes())
 	s := int(d.Seconds()) % 60
 	return fmt.Sprintf("%02d:%02d", m, s)
+}
+
+// meetingEmbedder is the speaker embedder for a meeting in lang (see
+// models.Status.SpeakerModelFor), or nil if no speaker model is loaded.
+func (d *Daemon) meetingEmbedder(lang string) *speaker.Embedder {
+	if d.embedders == nil || d.modelStatus == nil {
+		return nil
+	}
+	m, path, _ := d.modelStatus.SpeakerModelFor(d.cfg.Meeting.SpeakerModel, lang)
+	if !d.modelStatus.SpeakerModelReady(m) {
+		return nil
+	}
+	e, err := d.embedders.Get(path)
+	if err != nil {
+		fmt.Printf("Warning: speaker model %s: %v\n", m.Name, err)
+		return nil
+	}
+	return e
 }

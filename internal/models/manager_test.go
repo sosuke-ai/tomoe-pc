@@ -3,6 +3,8 @@ package models
 import (
 	"archive/tar"
 	"bytes"
+	"crypto/sha256"
+	"encoding/hex"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -164,8 +166,20 @@ func TestDownloadFile(t *testing.T) {
 	destDir := t.TempDir()
 	destPath := filepath.Join(destDir, "model.onnx")
 
-	if err := downloadFile(server.URL, destPath); err != nil {
+	var gotProgress []int64
+	if err := downloadFile(server.URL, destPath, "Test Model", func(step string, downloaded, total int64) {
+		if step != "Test Model" {
+			t.Errorf("progress step = %q, want %q", step, "Test Model")
+		}
+		if total != int64(len(content)) {
+			t.Errorf("progress total = %d, want %d", total, len(content))
+		}
+		gotProgress = append(gotProgress, downloaded)
+	}); err != nil {
 		t.Fatalf("downloadFile() error: %v", err)
+	}
+	if len(gotProgress) == 0 || gotProgress[len(gotProgress)-1] != int64(len(content)) {
+		t.Errorf("final progress = %v, want it to end at %d", gotProgress, len(content))
 	}
 
 	data, err := os.ReadFile(destPath)
@@ -186,7 +200,7 @@ func TestDownloadFileHTTPError(t *testing.T) {
 	destDir := t.TempDir()
 	destPath := filepath.Join(destDir, "model.onnx")
 
-	err := downloadFile(server.URL, destPath)
+	err := downloadFile(server.URL, destPath, "Test Model", nil)
 	if err == nil {
 		t.Error("downloadFile() should return error for 404")
 	}
@@ -216,7 +230,7 @@ func TestDownloadSkipsExistingModels(t *testing.T) {
 	createFakeModelFiles(t, dir)
 
 	// Download with force=false should skip
-	err := m.Download(false)
+	err := m.Download(false, nil)
 	if err != nil {
 		t.Fatalf("Download() error: %v", err)
 	}
@@ -311,4 +325,66 @@ func createTestTarBz2(t *testing.T, files map[string]string) []byte {
 		t.Skipf("bzip2 command not available: %v", err)
 	}
 	return out.Bytes()
+}
+
+func TestPruneEnglishStreamingKeepsOnlyInt8Model(t *testing.T) {
+	modelDir := t.TempDir()
+	dir := filepath.Join(modelDir, EnglishStreamingSubdir)
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	keep := []string{englishStreamingEncoderFile, englishStreamingDecoderFile, englishStreamingJoinerFile, englishStreamingTokensFile, "README.md"}
+	drop := []string{
+		"encoder-epoch-99-avg-1-chunk-16-left-128.onnx",
+		"decoder-epoch-99-avg-1-chunk-16-left-128.onnx",
+		"joiner-epoch-99-avg-1-chunk-16-left-128.onnx",
+	}
+	for _, name := range append(append([]string{}, keep...), drop...) {
+		if err := os.WriteFile(filepath.Join(dir, name), []byte("x"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	pruneEnglishStreaming(dir)
+
+	for _, name := range keep {
+		if _, err := os.Stat(filepath.Join(dir, name)); err != nil {
+			t.Errorf("%s was removed: %v", name, err)
+		}
+	}
+	for _, name := range drop {
+		if _, err := os.Stat(filepath.Join(dir, name)); !os.IsNotExist(err) {
+			t.Errorf("%s still present (err=%v), want removed", name, err)
+		}
+	}
+	if !NewManager(modelDir).WithLiveModel(LiveZipformer).Check().EnglishStreamingReady {
+		t.Error("streaming model no longer complete after pruning")
+	}
+}
+
+func TestDownloadVerifiedKeepsOnlyMatchingFiles(t *testing.T) {
+	body := []byte("model bytes")
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { _, _ = w.Write(body) }))
+	defer srv.Close()
+	dir := t.TempDir()
+	dest := filepath.Join(dir, "m.onnx")
+	sum := sha256.Sum256(body)
+
+	if err := downloadVerified(srv.URL, dest, hex.EncodeToString(sum[:]), "test", nil); err != nil {
+		t.Fatalf("matching checksum: %v", err)
+	}
+	if got, _ := os.ReadFile(dest); string(got) != string(body) {
+		t.Fatalf("kept %q, want %q", got, body)
+	}
+
+	other := filepath.Join(dir, "bad.onnx")
+	if err := downloadVerified(srv.URL, other, strings.Repeat("0", 64), "test", nil); err == nil {
+		t.Fatal("a checksum mismatch was accepted")
+	}
+	if _, err := os.Stat(other); !os.IsNotExist(err) {
+		t.Error("a file with the wrong checksum was left in place")
+	}
+	if left, _ := filepath.Glob(filepath.Join(dir, "*.part")); len(left) != 0 {
+		t.Errorf("temporary files left behind: %v", left)
+	}
 }

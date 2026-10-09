@@ -11,8 +11,11 @@ interface Window {
   go: {
     backend: {
       App: {
+        InitStatus(): Promise<{ done: boolean; error?: string }>;
         ListAudioDevices(): Promise<any[]>;
         ListMonitorSources(): Promise<any[]>;
+        SystemAudioMode(): Promise<string>;
+        ListAudioSources(): Promise<any[]>;
         StartSession(mic: string, monitor: string, lang: string, platform: string): Promise<void>;
         GetAvailableLanguages(): Promise<string[]>;
         GetDefaultLanguage(): Promise<string>;
@@ -26,6 +29,17 @@ interface Window {
         GetConfig(): Promise<any>;
         GetGPUInfo(): Promise<any>;
         GetModelStatus(): Promise<any>;
+        ApplySettings(cfg: any): Promise<any>;
+        GetTools(): Promise<any[]>;
+        FixTool(id: string): Promise<void>;
+        CopyToClipboard(text: string): Promise<void>;
+        GetVideoHintLooks(sessionId: string): Promise<any[]>;
+        ListHintWindows(): Promise<any[]>;
+        CurrentAudioSource(): Promise<string>;
+        SetHintWindow(app: string): Promise<void>;
+        GetLookThumb(sessionId: string, look: number): Promise<string>;
+        SaveLookForAnalysis(sessionId: string, look: number): Promise<string>;
+        RenameSpeaker(sessionId: string, label: string, name: string): Promise<void>;
       };
     };
   };
